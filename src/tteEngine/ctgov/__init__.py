@@ -11,10 +11,12 @@ from .reader import (
     nct_id_of,
     reported_outcome_measures,
 )
+from .spec import study_to_spec
 
 __all__ = [
     "fetch_study",
     "fetch_batch",
     "nct_id_of",
     "reported_outcome_measures",
+    "study_to_spec",
 ]
