@@ -51,3 +51,43 @@ def test_falls_back_to_any_measurable_non_mortality():
     spec = _spec(_o("Length of Hospital Stay"))
     cols = ["outcome_Length_of_Hospital_Stay"]
     assert select_measurable_outcome(spec, cols).name == "Length of Hospital Stay"
+
+
+# --- compare-alignment: pick the REPORTED outcome matching the emulated one ---
+
+def _two_outcome_study():
+    """First-listed PRIMARY = non-mortality (RR 1.0); secondary = mortality (RR 0.8)."""
+    def om(typ, title, te, tn, ce, cn):
+        return {"type": typ, "title": title, "paramType": "COUNT_OF_PARTICIPANTS",
+                "groups": [{"id": "OG0", "title": "Drug"}, {"id": "OG1", "title": "Placebo"}],
+                "denoms": [{"counts": [{"groupId": "OG0", "value": str(tn)},
+                                       {"groupId": "OG1", "value": str(cn)}]}],
+                "classes": [{"categories": [{"measurements": [
+                    {"groupId": "OG0", "value": str(te)}, {"groupId": "OG1", "value": str(ce)}]}]}]}
+    return {"protocolSection": {"identificationModule": {"nctId": "NCT9"}},
+            "resultsSection": {"outcomeMeasuresModule": {"outcomeMeasures": [
+                om("PRIMARY", "ICU readmission", 40, 400, 40, 400),       # RR 1.0
+                om("SECONDARY", "28-day mortality", 120, 400, 150, 400),  # RR 0.8
+            ]}}}
+
+
+def test_parse_reported_effect_aligns_to_emulated_outcome():
+    from tteEngine.analysis import parse_reported_effect
+    # default -> primary (ICU readmission, RR ~1.0)
+    base = parse_reported_effect(_two_outcome_study(), treatment_hint="drug")
+    assert "readmission" in base["title"].lower()
+    # aligned to the emulated mortality outcome -> picks 28-day mortality (RR 0.8)
+    aligned = parse_reported_effect(_two_outcome_study(), treatment_hint="drug",
+                                    outcome_name="ICU Mortality")
+    assert "mortality" in aligned["title"].lower()
+    assert abs(aligned["effect"]["risk_ratio"] - 0.8) < 1e-9
+
+
+def test_compare_trial_uses_emulated_outcome_for_alignment():
+    from tteEngine.analysis import compare_trial
+    from tteEngine.contracts.results import EffectMeasure, TTEResult
+    em = TTEResult(nct_id="NCT9", dataset="MIMIC-IV", method="iptw", measure=EffectMeasure.OR,
+                   estimate=0.82, ci_low=0.70, ci_high=0.95, extra={"outcome": "ICU Mortality"})
+    r = compare_trial(_two_outcome_study(), em, treatment_hint="drug")
+    # aligned to mortality (RR 0.8) -> observed ~0.8, concordant (both protective)
+    assert r.observed_estimate is not None and abs(r.observed_estimate - 0.8) < 1e-9

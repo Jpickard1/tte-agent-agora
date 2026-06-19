@@ -57,20 +57,42 @@ def _is_count(om: dict) -> bool:
     return (om.get("paramType") or "").upper().startswith("COUNT") or bool(om.get("denoms"))
 
 
-def _pick_primary_count(outcome_measures) -> dict | None:
+def _title_match_score(title: str, target: str) -> tuple:
+    """How well a reported outcome title matches the EMULATED outcome name: both
+    being mortality endpoints ranks highest, then shared significant-word overlap."""
+    from .outcomes import is_mortality_outcome
+    tw = {w for w in re.findall(r"[a-z]+", (title or "").lower()) if len(w) > 3}
+    gw = {w for w in re.findall(r"[a-z]+", (target or "").lower()) if len(w) > 3}
+    return (is_mortality_outcome(title) and is_mortality_outcome(target), len(tw & gw))
+
+
+def _pick_count_for(outcome_measures, outcome_name: str | None = None) -> dict | None:
+    """Pick the reported count outcome to compare against. When `outcome_name` (the
+    EMULATED outcome) is given, prefer the reported outcome whose title matches it
+    (like-for-like comparison); otherwise fall back to the PRIMARY count outcome."""
     cands = [om for om in (outcome_measures or [])
              if _is_count(om) and len(_measurements(om)) >= 2]
     if not cands:
         return None
+    if outcome_name:
+        best = max(cands, key=lambda om: _title_match_score(om.get("title", ""), outcome_name))
+        if _title_match_score(best.get("title", ""), outcome_name) != (False, 0):
+            return best   # a real title match -> align to it
     prim = [o for o in cands if (o.get("type") or "").upper() == "PRIMARY"]
     return (prim or cands)[0]
 
 
-def parse_reported_effect(study: dict, treatment_hint: str = "") -> dict | None:
-    """Extract the primary count outcome's treatment-vs-control contrast from the
-    study's posted results. Returns a dict (always with per-arm ``rates``;
-    ``effect`` populated only when both arms are identified) or None."""
-    om = _pick_primary_count(reported_outcome_measures(study))
+def _pick_primary_count(outcome_measures) -> dict | None:
+    return _pick_count_for(outcome_measures, None)
+
+
+def parse_reported_effect(study: dict, treatment_hint: str = "",
+                          outcome_name: str | None = None) -> dict | None:
+    """Extract a count outcome's treatment-vs-control contrast from the study's
+    posted results. `outcome_name` (the emulated outcome) aligns the reported effect
+    to the SAME endpoint (like-for-like); else the primary count outcome. Returns a
+    dict (always with per-arm ``rates``; ``effect`` only when both arms found) or None."""
+    om = _pick_count_for(reported_outcome_measures(study), outcome_name)
     if om is None:
         return None
     titles = {g.get("id"): g.get("title", "") for g in om.get("groups", []) or []}
@@ -156,8 +178,11 @@ def _judge(effect: dict, emulated: TTEResult) -> tuple[Agreement, str]:
 def compare_trial(study: dict, emulated: TTEResult, *, treatment_hint: str = "",
                   dataset: str | None = None) -> ComparisonResult:
     """One emulated-vs-observed row (contracts.ComparisonResult): parse the trial's
-    reported effect and judge directional agreement with the emulated TTEResult."""
-    effect = (parse_reported_effect(study, treatment_hint) or {}).get("effect") or {}
+    reported effect for the SAME outcome the engine emulated (like-for-like) and judge
+    directional agreement with the emulated TTEResult."""
+    emulated_outcome = (emulated.extra or {}).get("outcome")
+    effect = (parse_reported_effect(study, treatment_hint,
+                                    outcome_name=emulated_outcome) or {}).get("effect") or {}
     obs_est, obs_meas = _observed(effect)
     agreement, note = _judge(effect, emulated)
     return ComparisonResult(
