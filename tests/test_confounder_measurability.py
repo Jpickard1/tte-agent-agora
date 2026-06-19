@@ -31,6 +31,24 @@ def test_missing_fraction_when_frame_supplied():
     assert v["status"] == M.MEASURABLE and v["missing_fraction"] == 0.5
 
 
+def test_pruned_for_scale_flags_measurable_lab_confounder():
+    # lean-mode prunes LAB/MEASUREMENT covariates -> a measurable lab confounder is
+    # flagged pruned_for_scale (available, NOT adjusted) so the ledger stays honest.
+    pruned = {EventType.LAB, EventType.MEASUREMENT}
+    v = M.confounder_measurability("lactate", EventType.LAB, "MIMIC-IV", pruned_event_types=pruned)
+    assert v["status"] == M.MEASURABLE and v["pruned_for_scale"] is True
+    assert "PRUNED FOR SCALE" in v["reason"] and "not adjusted" in v["reason"]
+
+
+def test_pruned_for_scale_does_not_touch_non_pruned_types():
+    pruned = {EventType.LAB, EventType.MEASUREMENT}
+    # a DIAGNOSIS confounder isn't pruned -> normal measurable, not flagged
+    v = M.confounder_measurability("sepsis", EventType.DIAGNOSIS, "MIMIC-IV", pruned_event_types=pruned)
+    assert v["status"] == M.MEASURABLE and v["pruned_for_scale"] is False
+    # default (no pruned set) -> never flagged
+    assert M.confounder_measurability("lactate", EventType.LAB, "MIMIC-IV")["pruned_for_scale"] is False
+
+
 def test_usable_as_injectable_measure_fn():
     # probe's pattern: measure_fn(concept, event_type, dataset) -> verdict
     considered = [("age", EventType.DEMOGRAPHIC), ("lactate", EventType.LAB),

@@ -190,7 +190,8 @@ def build_measurability_catalog(
 
 
 def confounder_measurability(concept: str, event_type: EventType, dataset: str, *,
-                             frame=None, column: str | None = None) -> dict:
+                             frame=None, column: str | None = None,
+                             pruned_event_types=None) -> dict:
     """Per-CONFOUNDER measurability verdict for the #105 adjustability ledger
     (probe): is this confounder measurable / proxy / unmeasurable in `dataset`?
 
@@ -198,11 +199,22 @@ def confounder_measurability(concept: str, event_type: EventType, dataset: str, 
     (confounder, dataset) granularity — drop-in as an injectable measure_fn. When a
     built analysis `frame` + `column` are supplied, also reports the missing
     fraction (so the ledger can flag measurable-but-too-missing). Pure (frame
-    optional)."""
+    optional).
+
+    `pruned_event_types` (e.g. {LAB, MEASUREMENT} in lean-mode runs): a confounder
+    of one of these types that IS measurable is flagged `pruned_for_scale=True` —
+    it was available but NOT extracted/adjusted for scale. The ledger must show it
+    as measurable-but-pruned (available, not adjusted), NEVER silently dropped, so
+    the >=1k gallery stays honest about residual confounding (manager's guardrail)."""
     status, reason = _classify(concept, event_type, dataset,
                                is_outcome=(event_type == EventType.OUTCOME))
     out = {"confounder": concept, "event_type": event_type.value,
-           "dataset": dataset, "status": status, "reason": reason}
+           "dataset": dataset, "status": status, "reason": reason,
+           "pruned_for_scale": False}
+    if status == MEASURABLE and pruned_event_types and event_type in set(pruned_event_types):
+        out["pruned_for_scale"] = True
+        out["reason"] = (f"measurable in {dataset} but PRUNED FOR SCALE "
+                         f"({event_type.value} not extracted in lean mode) — available, not adjusted")
     if frame is not None and column is not None and column in getattr(frame, "columns", []):
         n = len(frame)
         out["missing_fraction"] = round(float(frame[column].isna().sum()) / n, 4) if n else 0.0
