@@ -37,7 +37,14 @@ def _to_contract(r, spec, cohort, adjustment: str) -> TTEResult:
     transitional analysis.TTEResult (duck-typed on `point_estimate`).
     """
     if isinstance(r, TTEResult):
-        return r
+        # run_tte sees only the analysis frame, so it cannot know the trial /
+        # dataset identity — stamp them from spec/cohort if left blank.
+        patch = {}
+        if not r.nct_id:
+            patch["nct_id"] = spec.nct_id
+        if not r.dataset:
+            patch["dataset"] = cohort.dataset
+        return r.model_copy(update=patch) if patch else r
     if not hasattr(r, "point_estimate"):  # already the contract-shaped object
         return r
     measure = _MEASURE.get(r.effect_measure or "", EffectMeasure.OR)
