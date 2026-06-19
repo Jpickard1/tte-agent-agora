@@ -11,5 +11,17 @@ entrypoint run_tte + TTEResult are import-light wrappers.
 """
 
 from .runner import BalanceRow, TTEResult, add_treatment_indicator, run_tte
+from .compare import compare_trial, concordance, parse_reported_effect
+from .benchmark import benchmark_trials, run_benchmark
 
-__all__ = ["run_tte", "TTEResult", "BalanceRow", "add_treatment_indicator"]
+__all__ = [
+    "run_tte",
+    "TTEResult",
+    "BalanceRow",
+    "add_treatment_indicator",
+    "parse_reported_effect",
+    "concordance",
+    "compare_trial",
+    "run_benchmark",
+    "benchmark_trials",
+]
