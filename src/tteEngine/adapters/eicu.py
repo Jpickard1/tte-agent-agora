@@ -95,20 +95,35 @@ def _icd_match(series: "pd.Series", codes: set[str]) -> "pd.Series":
     return series.astype(str).map(hit)
 
 
+def _icd_family_match(series: "pd.Series", codeset) -> "pd.Series":
+    """#132: boolean mask where ANY token of the multi-code icd9code field is in the
+    IcdCodeSet's ICD family (hierarchy)."""
+    return series.astype(str).map(codeset.matches_any)
+
+
 def _cohort_stays(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
-                  resolve: Resolver) -> set[int]:
+                  resolve: Resolver, dx_matcher: dict | None = None) -> set[int]:
     """In-cohort stays = those with a diagnosis matching any cohort-filter concept.
-    Empty filter -> all stays in the `patient` table."""
+    Empty filter -> all stays in the `patient` table. #132: ICD-family (hierarchy)
+    match when dx_matcher has the concept, else resolved codes."""
     if not plan.cohort_filter_concepts:
         pt = tables.get("patient")
         return set(pt[_STAY].astype("int64")) if pt is not None else set()
-    codes: set[str] = set()
-    for c in plan.cohort_filter_concepts:
-        codes |= resolve(c)
     dx = tables.get("diagnosis")
     if dx is None or dx.empty:
         return set()
-    hit = dx[_icd_match(dx["icd9code"], codes)]
+    import pandas as pd
+    mask = pd.Series(False, index=dx.index)
+    codes: set[str] = set()
+    for c in plan.cohort_filter_concepts:
+        cs = (dx_matcher or {}).get(c)
+        if cs is not None:
+            mask = mask | _icd_family_match(dx["icd9code"], cs)
+        else:
+            codes |= resolve(c)
+    if codes:
+        mask = mask | _icd_match(dx["icd9code"], codes)
+    hit = dx[mask]
     return set(hit[_STAY].astype("int64"))
 
 
@@ -196,15 +211,16 @@ def _extract_mortality(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
 
 
 def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
-            resolve: Resolver | None = None, drug_matcher: dict | None = None) -> pd.DataFrame:
+            resolve: Resolver | None = None, drug_matcher: dict | None = None,
+            dx_matcher: dict | None = None) -> pd.DataFrame:
     """Build the canonical 5-col stream for `plan` from eICU `tables` (patient,
     diagnosis, lab, medication, vitalperiodic/vitalaperiodic). Covers DIAGNOSIS/
     LAB/MEDICATION (generic loop), MEASUREMENT (melted vitals) and OUTCOME
-    (mortality from patient discharge status). When `drug_matcher` is supplied,
-    MEDICATION is matched BY CODE (drughiclseqno) + emitted as the arm concept (#131
-    seam A). Returns a validate_canonical df."""
+    (mortality from patient discharge status). `drug_matcher` (#131): meds by code.
+    `dx_matcher` (#132): diagnoses by ICD family (hierarchy). Returns a
+    validate_canonical df."""
     resolve = resolve or _identity_resolver
-    stays = _cohort_stays(plan, tables, resolve)
+    stays = _cohort_stays(plan, tables, resolve, dx_matcher)
     if not stays:
         return _empty_canonical()
     lo, hi = effective_window(plan)
@@ -220,10 +236,13 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
         src = tables.get(spec["table"])
         if src is None or src.empty:
             continue
-        codes = resolve(req.concept)
-        name_match = (_icd_match(src[spec["name"]], codes)        # multi-code icd9 field
-                      if req.event_type == EventType.DIAGNOSIS
-                      else src[spec["name"]].astype(str).isin(codes))
+        dx_fam = (dx_matcher or {}).get(req.concept) if req.event_type == EventType.DIAGNOSIS else None
+        if dx_fam is not None:                                     # #132 ICD-family match
+            name_match = _icd_family_match(src[spec["name"]], dx_fam)
+        elif req.event_type == EventType.DIAGNOSIS:
+            name_match = _icd_match(src[spec["name"]], resolve(req.concept))   # multi-code icd9
+        else:
+            name_match = src[spec["name"]].astype(str).isin(resolve(req.concept))
         rows = src[src[_STAY].astype("int64").isin(stays) & name_match].copy()
         if rows.empty:
             continue
