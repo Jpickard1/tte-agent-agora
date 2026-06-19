@@ -56,12 +56,15 @@ def _window_mask(sub: "pd.DataFrame", t0, window_hours) -> "pd.DataFrame":
     return sub[(rel >= lo) & (rel <= hi)]
 
 
-def _criterion_satisfied(traj_events: "pd.DataFrame", crit: EligibilityCriterion, t0) -> bool:
+def _criterion_satisfied(traj_events: "pd.DataFrame", crit: EligibilityCriterion, t0, resolve) -> bool:
     import pandas as pd
 
     sub = traj_events[traj_events["EVENT_TYPE"] == crit.event_type.value]
     if crit.concept is not None:
-        sub = sub[sub["EVENT_NAME"] == crit.concept]
+        # match raw EVENT_NAME==concept OR resolve(EVENT_NAME)==concept, so both
+        # concept-name streams (synthetic) and raw-coded adapter streams (#5<->#9) work.
+        names = sub["EVENT_NAME"]
+        sub = sub[(names == crit.concept) | (names.map(resolve) == crit.concept)]
     sub = _window_mask(sub, t0, crit.window_hours)
     if len(sub) == 0:
         return False
@@ -88,9 +91,9 @@ def _criterion_satisfied(traj_events: "pd.DataFrame", crit: EligibilityCriterion
     return False
 
 
-def _is_eligible(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0) -> bool:
+def _is_eligible(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve) -> bool:
     for crit in spec.eligibility:
-        satisfied = _criterion_satisfied(traj_events, crit, t0)
+        satisfied = _criterion_satisfied(traj_events, crit, t0, resolve)
         if crit.include and not satisfied:
             return False
         if (not crit.include) and satisfied:  # exclusion criterion triggered
@@ -98,7 +101,7 @@ def _is_eligible(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0) -> bool
     return True
 
 
-def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0) -> str:
+def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve) -> str:
     """First treatment arm whose intervention is administered within the grace
     window wins; otherwise control. Returns the arm name.
     """
@@ -106,9 +109,11 @@ def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0) -> str:
     treatment_arms = [a for a in spec.arms if not a.is_control]
     control = next((a for a in spec.arms if a.is_control), None)
     for arm in treatment_arms:
+        names = traj_events["EVENT_NAME"]
         meds = traj_events[
             (traj_events["EVENT_TYPE"] == EventType.MEDICATION.value)
-            & (traj_events["EVENT_NAME"].isin(arm.intervention_concepts))
+            & (names.isin(arm.intervention_concepts)
+               | names.map(resolve).isin(arm.intervention_concepts))
         ]
         meds = _window_mask(meds, t0, (0.0, grace))
         if len(meds) > 0:
@@ -122,10 +127,18 @@ def build_cohort(
     *,
     dataset: str,
     validate: bool = True,
+    resolve=None,
 ) -> CohortResult:
-    """Build the emulated-trial cohort. Returns CohortResult (arms + index_times)."""
+    """Build the emulated-trial cohort. Returns CohortResult (arms + index_times).
+
+    `resolve` (optional, #5<->#9): an EVENT_NAME->concept mapping (e.g.
+    vocab.classify) so real adapter streams that emit RAW codes (ICD 'A41') match
+    concept-level eligibility/arms ('sepsis'). Injected (not a hard #5 import) so
+    builder stays import-light; default identity -> concept-name streams unchanged.
+    """
     if validate:
         validate_canonical(events)
+    _resolve = resolve or (lambda name: name)
 
     t0_all = _index_times(events, spec)
     arms: dict[str, list[int]] = {}
@@ -135,9 +148,9 @@ def build_cohort(
     for tid in sorted(by_id):
         t0 = t0_all[tid]
         traj = by_id[tid]
-        if not _is_eligible(traj, spec, t0):
+        if not _is_eligible(traj, spec, t0, _resolve):
             continue
-        arm_name = _assign_arm(traj, spec, t0)
+        arm_name = _assign_arm(traj, spec, t0, _resolve)
         arms.setdefault(arm_name, []).append(tid)
         index_times[tid] = t0
 
