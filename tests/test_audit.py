@@ -14,10 +14,19 @@ from tteEngine.contracts.audit import (
 
 
 def test_confidence_tiers_and_low_flag():
-    # locked order: rxnorm_code > ingredient > name > substring(LOW)
-    assert [c.value for c in Confidence] == ["rxnorm_code", "ingredient", "name", "substring"]
+    # locked tiers + icd_hierarchy (structured dx code, top-trust, NOT low)
+    assert [c.value for c in Confidence] == [
+        "rxnorm_code", "icd_hierarchy", "ingredient", "name", "substring"]
     assert Confidence.SUBSTRING in LOW_CONFIDENCE
     assert Confidence.RXNORM_CODE not in LOW_CONFIDENCE
+    assert Confidence.ICD_HIERARCHY not in LOW_CONFIDENCE  # dx code match is high-trust
+
+
+def test_match_provenance_optional_fields():
+    p = MatchProvenance(trajectory_id=1, arm="t", method=Confidence.ICD_HIERARCHY,
+                        source_table="diagnoses_icd", dose="100 mg", route="IV", matched_row_id="r7")
+    assert p.source_table == "diagnoses_icd" and p.dose == "100 mg" and p.route == "IV"
+    assert p.method == Confidence.ICD_HIERARCHY
 
 
 def _audit():
