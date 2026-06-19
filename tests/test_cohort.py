@@ -110,3 +110,49 @@ def test_analysis_frame_group_outcome_covariate():
     assert bool(frame.loc[1, "outcome_28d_mortality"]) is True
     assert bool(frame.loc[2, "outcome_28d_mortality"]) is False
     assert "outcome_28d_mortality" in c.feature_columns
+
+
+def test_immortal_time_guard_excludes_outcome_before_landmark():
+    # patient dies at +10h, before the 24h landmark -> excluded (immortal time)
+    early = _frame([
+        (9, _hr(-1), "diagn", "sepsis", "1"),
+        (9, _hr(0), "lab", "lactate", "4.0"),
+        (9, _hr(2), "medic", "hydrocortisone", "50"),
+        (9, _hr(10), "outco", "death", "1"),
+    ])
+    c = build_cohort(early, SPEC, dataset="TEST")
+    enrolled = [tid for arm in c.arms for tid in arm.trajectory_ids]
+    assert 9 not in enrolled
+    assert c.diagnostics.n_excluded_immortal == 1
+    assert c.diagnostics.n_eligible == 1 and c.diagnostics.n_enrolled == 0
+
+
+def test_outcome_after_landmark_is_kept():
+    c = build_cohort(EVENTS, SPEC, dataset="TEST")  # deaths at +100h, landmark 24h
+    assert c.diagnostics.n_excluded_immortal == 0
+    assert c.diagnostics.n_enrolled == 2
+
+
+def test_diagnostics_populated():
+    d = build_cohort(EVENTS, SPEC, dataset="TEST").diagnostics
+    assert d.n_screened == 3 and d.n_eligible == 2
+    assert d.anchor == "lactate" and d.landmark_hours == 24.0
+    assert d.arm_sizes == {"steroid": 1, "control": 1}
+
+
+def test_post_t0_eligibility_window_is_flagged():
+    from tteEngine.contracts.trial_spec import Comparator, EligibilityCriterion
+    spec2 = SPEC.model_copy(update={"eligibility": [
+        EligibilityCriterion(concept="sepsis", event_type=EventType.DIAGNOSIS, comparator=Comparator.EXISTS),
+        EligibilityCriterion(concept="lactate", event_type=EventType.LAB, comparator=Comparator.GT,
+                             value=2.0, window_hours=(0.0, 24.0))]})
+    d = build_cohort(EVENTS, spec2, dataset="TEST").diagnostics
+    assert any("post-t0" in w for w in d.leakage_warnings)
+
+
+def test_landmark_guard_can_be_disabled():
+    early = _frame([
+        (9, _hr(-1), "diagn", "sepsis", "1"), (9, _hr(0), "lab", "lactate", "4.0"),
+        (9, _hr(10), "outco", "death", "1")])
+    c = build_cohort(early, SPEC, dataset="TEST", enforce_landmark=False)
+    assert c.diagnostics.n_excluded_immortal == 0
