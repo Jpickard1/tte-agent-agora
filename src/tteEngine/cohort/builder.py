@@ -180,6 +180,38 @@ def _leakage_warnings(spec) -> list[str]:
     return warns
 
 
+def _assign_with_prov(traj_events, spec, t0, resolve, arm_match_fn):
+    """Like _assign_arm, but returns (arm_name, provenance|None). provenance is a
+    MatchProvenance-shaped dict for the matched treatment event. With arm_match_fn
+    (worker1's code matcher) it records the matched code + method; the default is the
+    normalized-substring fallback (method='substring', low confidence)."""
+    grace = spec.time_zero.grace_window_hours
+    treatment_arms = [a for a in spec.arms if not a.is_control]
+    control = next((a for a in spec.arms if a.is_control), None)
+    meds = traj_events[traj_events["EVENT_TYPE"] == EventType.MEDICATION.value]
+    meds = _window_mask(meds, t0, (0.0, grace)).sort_values("TIMESTAMP")
+    for arm in treatment_arms:
+        concepts = arm.intervention_concepts
+        concepts_norm = [c for c in (_norm_drug(x) for x in concepts) if len(c) >= 3]
+        for _, row in meds.iterrows():
+            name = row["EVENT_NAME"]
+            if arm_match_fn is not None:
+                res = arm_match_fn(name, concepts)  # -> (matched, code, method)
+                ok = bool(res[0])
+                code = res[1] if len(res) > 1 else None
+                method = res[2] if len(res) > 2 else "name"
+            else:
+                n = _norm_drug(name)
+                ok = ("placebo" not in n) and any(cn in n or n in cn for cn in concepts_norm)
+                code, method = None, "substring"
+            if ok:
+                t_rel = (row["TIMESTAMP"] - t0).total_seconds() / 3600.0
+                return arm.name, {"arm": arm.name, "matched_event_name": str(name),
+                                  "matched_code": code, "method": method,
+                                  "t_rel_hours": round(float(t_rel), 2)}
+    return (control.name if control else "control"), None
+
+
 def build_cohort(
     events: "pd.DataFrame",
     spec: TargetTrialSpec,
@@ -191,6 +223,8 @@ def build_cohort(
     landmark_hours: float | None = None,
     skip_unmeasurable: bool = True,
     measurable_fn=None,
+    arm_match_fn=None,
+    provenance_sample: int = 50,
 ) -> CohortResult:
     """Build the emulated-trial cohort with explicit, immortal-time-safe time-zero.
 
@@ -213,21 +247,42 @@ def build_cohort(
     # (e.g. demographics not emitted) rather than failing every trajectory.
     present_types = set(events["EVENT_TYPE"].unique())
 
-    def _measurable(crit) -> bool:
+    def _measurable(crit):
+        """-> (measurable: bool, reason: str|None). Accepts measurable_fn returning
+        bool OR (bool, reason) (worker1's eligibility_measurable shape)."""
         if measurable_fn is not None:
-            return bool(measurable_fn(crit))
-        return crit.event_type.value in present_types
+            r = measurable_fn(crit)
+            if isinstance(r, tuple):
+                return bool(r[0]), (r[1] if len(r) > 1 else None)
+            return bool(r), None
+        present = crit.event_type.value in present_types
+        return present, (None if present else "event-type not present in dataset")
 
-    applied = [c for c in spec.eligibility if _measurable(c)] if skip_unmeasurable else list(spec.eligibility)
-    skipped = [c for c in spec.eligibility if c not in applied]
-    skipped_labels = [f"{c.concept or c.event_type.value} ({c.event_type.value})" for c in skipped]
+    # per-criterion eligibility audit (#138): applied (enforced) vs skipped-unmeasurable + why
+    applied, skipped_labels, eligibility_decisions = [], [], []
+    for c in spec.eligibility:
+        meas, reason = _measurable(c)
+        enforce = meas or not skip_unmeasurable
+        if enforce:
+            applied.append(c)
+        else:
+            skipped_labels.append(f"{c.concept or c.event_type.value} ({c.event_type.value})")
+        eligibility_decisions.append({
+            "concept": c.concept, "event_type": c.event_type.value,
+            "comparator": getattr(c.comparator, "value", str(c.comparator)),
+            "value": c.value, "measurable": meas,
+            "result": "applied" if enforce else "skipped_unmeasurable", "reason": reason,
+        })
 
     t0_all = _index_times(events, spec)
     arms: dict[str, list[int]] = {}
     index_times: dict[int, object] = {}
     by_id = {int(tid): g for tid, g in events.groupby("TRAJECTORY_ID", sort=True)}
 
-    n_eligible = n_excluded_immortal = 0
+    n_eligible = n_excluded_immortal = n_unassigned = n_low_conf = 0
+    provenance: list[dict] = []
+    arm_method_counts: dict[str, dict[str, int]] = {}
+    treatment_names = {a.name for a in spec.arms if not a.is_control}
     for tid in sorted(by_id):
         t0 = t0_all[tid]
         traj = by_id[tid]
@@ -237,9 +292,19 @@ def build_cohort(
         if enforce_landmark and _outcome_before_landmark(traj, spec, t0, landmark, _resolve):
             n_excluded_immortal += 1
             continue
-        arm_name = _assign_arm(traj, spec, t0, _resolve)
+        arm_name, prov = _assign_with_prov(traj, spec, t0, _resolve, arm_match_fn)
         arms.setdefault(arm_name, []).append(tid)
         index_times[tid] = t0
+        if prov is not None:  # a treatment match — record its method + a bounded sample
+            method = prov["method"]
+            arm_method_counts.setdefault(arm_name, {})
+            arm_method_counts[arm_name][method] = arm_method_counts[arm_name].get(method, 0) + 1
+            if method == "substring":
+                n_low_conf += 1
+            if len(provenance) < provenance_sample:
+                provenance.append({"trajectory_id": tid, **prov})
+        elif arm_name not in treatment_names and arm_name != (next((a.name for a in spec.arms if a.is_control), None)):
+            n_unassigned += 1
 
     control_names = {a.name for a in spec.arms if a.is_control} or {"control"}
     arm_objs = [
@@ -253,11 +318,13 @@ def build_cohort(
         anchor=spec.time_zero.anchor, grace_window_hours=spec.time_zero.grace_window_hours,
         landmark_hours=landmark, arm_sizes={a.name: len(a.trajectory_ids) for a in arm_objs},
         leakage_warnings=_leakage_warnings(spec),
-        n_skipped_unmeasurable=len(skipped), skipped_eligibility=skipped_labels,
+        n_skipped_unmeasurable=len(skipped_labels), skipped_eligibility=skipped_labels,
     )
     return CohortResult(
         nct_id=spec.nct_id, dataset=dataset, arms=arm_objs, index_times=index_times,
         n_total=n_total, diagnostics=diagnostics,
+        eligibility_decisions=eligibility_decisions, assignment_provenance=provenance,
+        arm_method_counts=arm_method_counts, n_unassigned=n_unassigned, n_low_confidence=n_low_conf,
     )
 
 
