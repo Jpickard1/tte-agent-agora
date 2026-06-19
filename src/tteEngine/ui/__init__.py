@@ -7,7 +7,7 @@ contracts.io.load_comparisons_jsonl, so it works on the live >1k/>10k run.
 """
 
 from .cards import TrialEmulationCard, build_cards
-from .confounders import balance_rows, confounder_block, confounder_ledger, confounder_summary
+from .confounders import balance_rows, confounder_block, confounder_summary, ledger_rows
 from .context_panel import corpus_context_summary, index_context, why_for
 from .dashboard import (
     DashboardModel,
@@ -29,7 +29,7 @@ __all__ = [
     "trial_table",
     "group_by_trial",
     "balance_rows",
-    "confounder_ledger",
+    "ledger_rows",
     "confounder_summary",
     "confounder_block",
 ]
