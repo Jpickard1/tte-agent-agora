@@ -21,6 +21,15 @@ from .robustness import (
     negative_control_check,
     sensitivity_report,
 )
+from .calibration import (
+    CONTROL_TRIALS,
+    CalibrationReport,
+    CalibrationResult,
+    ControlTrial,
+    ExpectedEffect,
+    calibrate,
+    observed_direction,
+)
 
 __all__ = [
     "run_tte",
@@ -36,4 +45,11 @@ __all__ = [
     "SensitivityReport",
     "negative_control_check",
     "NegativeControlResult",
+    "calibrate",
+    "CalibrationReport",
+    "CalibrationResult",
+    "ControlTrial",
+    "ExpectedEffect",
+    "observed_direction",
+    "CONTROL_TRIALS",
 ]
