@@ -157,7 +157,8 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
              measurable_fn=None, arm_match_fn=None,
              out_dir="live_outputs", datasets=DATASETS, max_studies=2000, max_trials=None,
              adjustment="iptw", covariates=None, threshold=0.5, emulable_only=True,
-             lean=True, http_get=None, context=True, figures=True, audit=True) -> dict:
+             arm_strategy="all", lean=True, http_get=None, context=True, figures=True,
+             audit=True) -> dict:
     """Run the live corpus end-to-end and write the gallery artifacts to out_dir:
     corpus.jsonl, context.jsonl, ledger.jsonl, RESULTS_NARRATIVE.md, drops.jsonl,
     summary.json (+ forest.png). `jobs`/`specs` may be injected (tests / a pre-built
@@ -195,6 +196,13 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
         run_kw["measurable_fn"] = measurable_fn
     if arm_match_fn is not None:
         run_kw["arm_match_fn"] = arm_match_fn
+    # #162: per-protocol combo arms (jpic-confirmed default 'all') — a combo trial is
+    # 'treated' only if EVERY component is co-administered in-window, so matching one
+    # routine banana-bag component (thiamine) no longer over-includes. 'all' is a no-op
+    # for single-component arms (n_required collapses to 1), so single-drug trials are
+    # unchanged; control arms are never forced.
+    if arm_strategy is not None:
+        run_kw["arm_strategy"] = arm_strategy
     # #143/#130: collect the per-(nct,dataset) AssignmentAudit (tte1 assembles it via
     # on_audit) so we can persist audit.jsonl for the 'how patients were sorted' panel
     if audit:
@@ -217,6 +225,7 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
         "n_dropped": len(drops),
         "drops_by_reason": drops.by_reason(),
         "adjustment": adjustment,
+        "arm_strategy": arm_strategy,
         "lean": bool(plan_fn is _lean_plan_fn),
         "n_audit": n_audit,
         "datasets": list(datasets),
@@ -262,6 +271,9 @@ def main(argv=None):
     ap.add_argument("--max-trials", type=int, default=None,
                     help="cap the number of (sepsis-first) trials run (e.g. for a quick real slice)")
     ap.add_argument("--adjustment", default="iptw", help="iptw | psm | cox | crude")
+    ap.add_argument("--arm-strategy", default="all", choices=["all", "any"],
+                    help="combo arm matching: 'all' = per-protocol (jpic-confirmed default, "
+                         "every component required); 'any' = treated if any component present")
     ap.add_argument("--synthetic", action="store_true",
                     help="scaffold: synthetic confounded stream (no real data) through the real engine")
     ap.add_argument("--full", action="store_true",
@@ -274,6 +286,7 @@ def main(argv=None):
     summary = run_live(
         extract_fn=extract_fn, out_dir=a.out, datasets=tuple(a.datasets),
         max_studies=a.max_studies, max_trials=a.max_trials, adjustment=a.adjustment,
+        arm_strategy=a.arm_strategy,
         lean=not a.full, context=not a.no_context, figures=not a.no_figures)
     print(json.dumps(summary, indent=2, default=str))
 
