@@ -116,6 +116,19 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     lo, hi = effective_window(plan)
 
     parts: list[pd.DataFrame] = []
+    # ICU-ADMISSION ANCHOR (the t0 marker) — emit a LOCATION event at admittime per
+    # cohort admission so the landmark t0 = admission, NOT the earliest event (which,
+    # for a control/outcome-only trajectory, is the death event -> immortal-excluded
+    # -> empty cohort + collapsed control arms). One LOCATION 'icu_admission' per hadm.
+    if anchors:
+        parts.append(pd.DataFrame({
+            "TRAJECTORY_ID": [int(h) for h in anchors],
+            "TIMESTAMP": pd.to_datetime(list(anchors.values()), utc=True),
+            "EVENT_TYPE": EventType.LOCATION.value,
+            "EVENT_NAME": "icu_admission",
+            "EVENT_VALUE": "1",
+        }))
+
     for req in plan.concepts:
         spec = TABLE_SPEC.get(req.event_type)
         if spec is None:
