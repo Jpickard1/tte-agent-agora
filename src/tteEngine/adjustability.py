@@ -43,11 +43,13 @@ STANDARD_ICU_CONFOUNDERS: list[tuple[str, EventType, tuple[str, ...]]] = [
 
 
 def _default_measure_fn(concept: str, event_type: EventType, dataset: str) -> tuple[str, str]:
-    """Per-confounder measurability verdict (status, reason) via #33. Injectable so
-    worker1's measurability can be swapped/refined without touching this builder."""
-    from .measurability import _classify
+    """Per-confounder measurability verdict (status, reason) via worker1's public
+    #117 entry. Injectable so the verdict source can be swapped/refined without
+    touching this builder."""
+    from .measurability import confounder_measurability
 
-    return _classify(concept, event_type, dataset)
+    d = confounder_measurability(concept, event_type, dataset)
+    return d["status"], d["reason"]
 
 
 def _alias_match(name: str, aliases: tuple[str, ...]) -> bool:
