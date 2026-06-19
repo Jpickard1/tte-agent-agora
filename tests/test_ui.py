@@ -87,3 +87,65 @@ def test_results_app_chart_builders():
     assert app._forest_chart([]) is None
     assert app._calibration_chart([{"emulated": 0.6, "observed": 0.7, "in_ci": True}]) is not None
     assert app._calibration_chart([]) is None
+
+
+# ---- #98 WHY-context panel (joins worker1's #95 sidecar) ----
+
+def _ctx(nct, dataset, *, emulable=True, score=0.8, is_sepsis=False, n_meas=8, n_proxy=2,
+         n_unmeas=1, gaps=None, proxy=None, variability=None):
+    from tteEngine.contracts.context import TrialDatasetContext
+    return TrialDatasetContext(
+        nct_id=nct, dataset=dataset, is_sepsis=is_sepsis, emulable=emulable,
+        emulability_score=score,
+        measurability={"n_measurable": n_meas, "n_proxy": n_proxy, "n_unmeasurable": n_unmeas,
+                       "fully_measurable": n_unmeas == 0, "gaps": gaps or []},
+        proxy_list=[{"element": e} for e in (proxy or [])],
+        variability=variability,
+    )
+
+
+def test_why_for_emulable_and_proxy():
+    from tteEngine.ui import why_for
+    w = why_for(_ctx("NCT1", "MIMIC-IV", proxy=["sofa", "map"]))
+    assert "Emulable" in w["why_emulable"]
+    assert w["measurability"]["n_proxy"] == 2
+    assert w["proxy_elements"] == ["sofa", "map"]
+
+
+def test_why_for_not_emulable_lists_gaps():
+    from tteEngine.ui import why_for
+    w = why_for(_ctx("NCT2", "eICU-CRD", emulable=False, score=0.2, n_unmeas=3,
+                     gaps=["primary_outcome", "key_inclusion"]))
+    assert "Not emulable" in w["why_emulable"] and "primary_outcome" in w["why_emulable"]
+
+
+def test_why_for_divergence_from_variability():
+    from tteEngine.ui import why_for
+    w = why_for(_ctx("NCT3", "MIMIC-IV",
+                     variability={"heterogeneity": {"i2": 0.62},
+                                  "attribution": {"causes": ["case-mix"], "note": "eICU sicker"}}))
+    assert "I²=62%" in w["why_divergent"] and "case-mix" in w["why_divergent"]
+
+
+def test_corpus_context_summary_rollup():
+    from tteEngine.ui import corpus_context_summary
+    recs = [_ctx("S1", "MIMIC-IV", is_sepsis=True, n_unmeas=0, proxy=["sofa"]),
+            _ctx("O1", "eICU-CRD", emulable=False, score=0.1, proxy=["sofa", "map"])]
+    s = corpus_context_summary(recs)
+    assert s["n"] == 2 and s["n_emulable"] == 1 and s["n_sepsis"] == 1
+    assert s["pct_fully_measurable"] == 0.5
+    assert s["top_proxy_elements"][0] == {"element": "sofa", "n": 2}
+
+
+def test_build_dashboard_joins_context_onto_cards():
+    pytest.importorskip("numpy")
+    pytest.importorskip("statsmodels")
+    from tteEngine.ui import build_dashboard
+    rows = [_cr("NCT1", "MIMIC-IV", 0.6, Agreement.CONCORDANT),
+            _cr("NCT2", "eICU-CRD", 1.4, Agreement.DISCORDANT)]
+    ctx = [_ctx("NCT1", "MIMIC-IV", proxy=["sofa"]), _ctx("NCT2", "eICU-CRD", emulable=False)]
+    m = build_dashboard(rows, context_records=ctx)
+    by = {(c.nct_id, c.dataset): c for c in m.cards}
+    assert by[("NCT1", "MIMIC-IV")].why["emulable"] is True
+    assert by[("NCT2", "eICU-CRD")].why["emulable"] is False
+    assert m.context_summary["n"] == 2

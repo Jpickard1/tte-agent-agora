@@ -82,12 +82,19 @@ def main() -> None:
         st.info("Set a corpus JSONL path (produced by `run_corpus_to_jsonl`) in the sidebar.")
         st.stop()
 
+    context_path = st.sidebar.text_input("WHY context JSONL (#95, optional)",
+                                          value=os.environ.get("TTE_CONTEXT_JSONL", ""))
     sepsis = _sepsis_ncts(catalog)
     rows = list(load_comparisons_jsonl(path))
     sepsis_only = st.sidebar.checkbox("Sepsis trials only", value=False, disabled=not sepsis)
     if sepsis_only:
         rows = [r for r in rows if r.nct_id in sepsis]
-    m = build_dashboard(rows, sepsis_ncts=sepsis)
+
+    context_records = None
+    if context_path and os.path.exists(context_path):
+        from tteEngine.contracts.context import load_context_jsonl
+        context_records = list(load_context_jsonl(context_path))
+    m = build_dashboard(rows, sepsis_ncts=sepsis, context_records=context_records)
 
     c1, c2, c3, c4 = st.columns(4)
     rate = m.concordance.get("rate")
@@ -101,6 +108,16 @@ def main() -> None:
     c4.metric("Calibration slope", f"{cal.get('slope'):.2f}" if cal.get("slope") is not None else "—",
               help=f"coverage {cal.get('coverage'):.0%}" if cal.get("coverage") is not None else "")
     st.caption(f"{m.n_total} emulations · {m.n_sepsis} sepsis · ideal: concordance→100%, slope→1.0, coverage→95%")
+
+    cs = m.context_summary
+    if cs.get("n"):
+        st.markdown("**Why-emulable (corpus):** "
+                    f"{cs.get('pct_emulable', 0):.0%} emulable · "
+                    f"{cs.get('pct_fully_measurable', 0):.0%} fully measurable · "
+                    f"mean emulability {cs.get('mean_emulability_score') or float('nan'):.2f}")
+        top = cs.get("top_proxy_elements") or []
+        if top:
+            st.caption("Most-proxied elements: " + ", ".join(f"{t['element']} ({t['n']})" for t in top))
 
     left, right = st.columns([3, 2])
     with left:
@@ -122,6 +139,15 @@ def main() -> None:
                      f"vs **observed** {card.observed_estimate}")
             st.write(f"n: {card.n_treated} treated / {card.n_control} control · "
                      f"p={card.p_value} · E-value={card.e_value}")
+            if card.why:  # WHY-context (#98)
+                w = card.why
+                st.markdown("**Why** — " + w.get("why_emulable", ""))
+                meas = w.get("measurability") or {}
+                st.caption(f"measurable {meas.get('n_measurable')} · proxy {meas.get('n_proxy')} · "
+                           f"unmeasurable {meas.get('n_unmeasurable')}"
+                           + (f" · proxied: {', '.join(w['proxy_elements'][:5])}" if w.get("proxy_elements") else ""))
+                if w.get("why_divergent"):
+                    st.caption(f"cross-dataset variability — {w['why_divergent']}")
 
 
 if __name__ == "__main__":
