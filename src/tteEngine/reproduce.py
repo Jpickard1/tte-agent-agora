@@ -6,7 +6,12 @@ sepsis-first set with posted results), a single command deterministically
 regenerates the corpus of emulated-vs-observed comparisons, the meta-analysis /
 calibration / driver outputs, and RESULTS_NARRATIVE.md:
 
-    python -m tteEngine.reproduce            # -> outputs/corpus.jsonl + RESULTS_NARRATIVE.md
+    python -m tteEngine.reproduce   # -> outputs/{corpus,context}.jsonl + RESULTS_NARRATIVE.md
+
+The context.jsonl sidecar (#95) carries the per-(nct_id, dataset) WHY record
+(emulability / measurability / proxy / cross-dataset variability), joined to the
+corpus on (nct_id, dataset), so the full gallery (incl. tte1's #98 WHY panel)
+reproduces from the frozen corpus.
 
 Determinism: the OBSERVED side is the trials' real posted results; the EMULATED
 side uses a SEEDED synthetic emulator (no EHR data needed, so it reproduces
@@ -89,11 +94,30 @@ def _treatment_hint(study: dict) -> str:
     return " ".join(treated.intervention_concepts) if treated else ""
 
 
+def _write_context(studies, comparisons, datasets, out) -> int:
+    """Emit the per-(nct_id, dataset) WHY sidecar (#95) next to corpus.jsonl,
+    joined on (nct_id, dataset) -> the same key as the corpus rows, so tte1's #98
+    panel reproduces from the frozen corpus. Gated import-light: if the rigor
+    layer can't be imported, the regen still produces the corpus + narrative."""
+    try:
+        from .context import write_context_sidecar
+    except ImportError:
+        return 0
+    specs = [study_to_spec(s) for s in studies]
+    results_by_trial: dict = {}
+    for c in comparisons:
+        results_by_trial.setdefault(c.nct_id, []).append(c)
+    return write_context_sidecar(specs, out / "context.jsonl",
+                                 datasets=tuple(datasets), results_by_trial=results_by_trial)
+
+
 def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
-              datasets=DATASETS, emulate=None) -> dict:
-    """Deterministically regenerate corpus -> JSONL -> meta/calibration/drivers ->
-    RESULTS_NARRATIVE.md from the frozen ctgov snapshot. `emulate(study, dataset)
-    -> TTEResult` defaults to the seeded synthetic emulator (offline-reproducible)."""
+              datasets=DATASETS, emulate=None, context: bool = True) -> dict:
+    """Deterministically regenerate the FULL gallery from the frozen ctgov snapshot:
+    corpus.jsonl + context.jsonl (the #95 WHY sidecar) -> meta/calibration/drivers ->
+    RESULTS_NARRATIVE.md. `emulate(study, dataset) -> TTEResult` defaults to the
+    seeded synthetic emulator (offline-reproducible); `context=False` skips the
+    sidecar."""
     studies = list(load_frozen_studies(corpus_path))
     sepsis_ncts = {nct_id_of(s) for s in studies if _is_sepsis(s)}
     used_synthetic = emulate is None
@@ -108,6 +132,7 @@ def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     dump_comparisons_jsonl(comparisons, out / "corpus.jsonl")
+    n_context = _write_context(studies, comparisons, datasets, out) if context else 0
     meta = meta_analyze(comparisons,
                         subgroup=lambda c: "sepsis" if c.nct_id in sepsis_ncts else "other")
     cal = corpus_calibration(comparisons)
@@ -116,6 +141,7 @@ def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
     return {
         "n_studies": len(studies),
         "n_comparisons": len(comparisons),
+        "n_context": n_context,
         "concordance_rate": meta.overall_concordance.rate,
         "calibration_slope": cal.slope,
         "i2": meta.pooled_effect.i2,
@@ -129,8 +155,10 @@ def main(argv=None):
     ap.add_argument("--corpus", default=str(FROZEN_CORPUS))
     ap.add_argument("--out", default="outputs")
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--no-context", action="store_true", help="skip the #95 WHY sidecar")
     a = ap.parse_args(argv)
-    print(json.dumps(reproduce(corpus_path=a.corpus, out_dir=a.out, seed=a.seed), indent=2))
+    print(json.dumps(reproduce(corpus_path=a.corpus, out_dir=a.out, seed=a.seed,
+                               context=not a.no_context), indent=2))
 
 
 if __name__ == "__main__":
