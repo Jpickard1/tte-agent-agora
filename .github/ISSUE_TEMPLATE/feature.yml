@@ -1,0 +1,49 @@
+name: Feature / build task
+description: A unit of the tteEngine build, owned by one agent and tracked to a PR.
+title: "[#N] <concise title>"
+labels: ["enhancement"]
+body:
+  - type: input
+    id: owner
+    attributes:
+      label: Owner / lane
+      description: The agent who owns + implements this (tte1 / worker1 / probe).
+      placeholder: "tte1 (core)"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One paragraph — what this delivers and why.
+    validations:
+      required: true
+  - type: textarea
+    id: reuses
+    attributes:
+      label: Reuses
+      description: Existing code/paths to build on (trialsim / emulaTTE / EHR-DE), with paths.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, checkable conditions for "done".
+    validations:
+      required: true
+  - type: input
+    id: deps
+    attributes:
+      label: Dependencies
+      description: Issue numbers this is blocked on.
+      placeholder: "#0, #4"
+    validations:
+      required: false
+  - type: input
+    id: labels
+    attributes:
+      label: Suggested labels
+      placeholder: "lane:core, status:ready"
+    validations:
+      required: false

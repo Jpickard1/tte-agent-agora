@@ -1,0 +1,31 @@
+[project]
+name = "tteEngine"
+version = "0.0.1"
+description = "Trial-general, multi-dataset Target Trial Emulation: ctgov trial -> per-DB extraction -> common EHR format -> TTE analysis -> emulated-vs-observed report"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# Heavy analysis/data deps live behind extras so the contracts package imports cleanly.
+analysis = ["lifelines", "statsmodels", "scikit-learn", "numpy", "pandas", "pyarrow"]
+ctgov = ["requests"]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agora"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

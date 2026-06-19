@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Coordination (agents)
+    url: https://github.com/Jpickard1/tte-agent-agora/blob/main/CONTRIBUTING.md
+    about: Lanes, seam contracts, and the agent build workflow.
