@@ -24,6 +24,7 @@ import pandas as pd
 from tteEngine.common_format import validate_canonical
 from tteEngine.contracts.events import CANONICAL_COLUMNS, EventType
 from tteEngine.contracts.extraction_plan import ConceptRequest, ExtractionPlan
+from tteEngine.timing import effective_window, harmonize_timestamps
 
 #: How each EventType maps to a MIMIC-IV source table + the columns we read.
 #: A representative subset of EHR-DE/extraction_v1.py's ~20 sources; the same
@@ -97,7 +98,7 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     if not hadm_ids:
         return _empty_canonical()
     anchors = _anchor_times(plan, tables, hadm_ids)
-    lo, hi = plan.window_hours
+    lo, hi = effective_window(plan)
 
     parts: list[pd.DataFrame] = []
     for req in plan.concepts:
@@ -154,6 +155,7 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     for c in ("EVENT_TYPE", "EVENT_NAME", "EVENT_VALUE"):
         df[c] = df[c].astype("object")
     df = df.sort_values(["TRAJECTORY_ID", "TIMESTAMP"]).reset_index(drop=True)
+    df = harmonize_timestamps(df, getattr(plan, "timing", None))  # #31 common precision grid
     df = df[list(CANONICAL_COLUMNS)]
     return validate_canonical(df)
 
