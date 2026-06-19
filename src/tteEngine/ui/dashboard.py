@@ -98,3 +98,41 @@ def build_dashboard(
         cards=cards,
         context_summary=context_summary,
     )
+
+
+def ctgov_url(nct_id: str) -> str:
+    """Real ClinicalTrials.gov study link (opens the registered trial)."""
+    return f"https://clinicaltrials.gov/study/{nct_id}"
+
+
+def trial_table(model: "DashboardModel") -> list[dict]:
+    """Flat one-row-per-(trial,dataset) table for the sortable/filterable summary
+    view. Carries the ctgov link + the WHY headline (emulable/score) so the table
+    cross-links to ClinicalTrials.gov and to the per-trial detail."""
+    rows = []
+    for c in model.cards:
+        why = c.why or {}
+        rows.append({
+            "nct_id": c.nct_id,
+            "ctgov": ctgov_url(c.nct_id),
+            "dataset": c.dataset,
+            "sepsis": c.is_sepsis,
+            "measure": c.measure,
+            "emulated": c.emulated_estimate,
+            "ci_low": c.ci_low,
+            "ci_high": c.ci_high,
+            "observed": c.observed_estimate,
+            "agreement": c.agreement,
+            "emulable": why.get("emulable"),
+            "score": why.get("emulability_score"),
+        })
+    return rows
+
+
+def group_by_trial(model: "DashboardModel") -> dict[str, list[TrialEmulationCard]]:
+    """Group cards by NCT id (preserving order) for the per-trial detail view —
+    one trial may appear across multiple datasets."""
+    out: dict[str, list[TrialEmulationCard]] = {}
+    for c in model.cards:
+        out.setdefault(c.nct_id, []).append(c)
+    return out

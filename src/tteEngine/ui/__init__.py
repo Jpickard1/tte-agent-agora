@@ -8,7 +8,13 @@ contracts.io.load_comparisons_jsonl, so it works on the live >1k/>10k run.
 
 from .cards import TrialEmulationCard, build_cards
 from .context_panel import corpus_context_summary, index_context, why_for
-from .dashboard import DashboardModel, build_dashboard
+from .dashboard import (
+    DashboardModel,
+    build_dashboard,
+    ctgov_url,
+    group_by_trial,
+    trial_table,
+)
 
 __all__ = [
     "TrialEmulationCard",
@@ -18,4 +24,7 @@ __all__ = [
     "index_context",
     "why_for",
     "corpus_context_summary",
+    "ctgov_url",
+    "trial_table",
+    "group_by_trial",
 ]
