@@ -80,6 +80,32 @@ def test_jsonl_roundtrip_and_join_key(tmp_path):
     assert ("NCT-A", "MIMIC-IV") in keys and ("NCT-B", "eICU-CRD") in keys
 
 
+def test_context_panel_rows_and_rollup():
+    from tteEngine.contracts.context import context_panel
+    results = {"NCT-SEP": [_cr("MIMIC-IV", 0.62, 0.45, 0.85, 300, 300),
+                           _cr("MGB", 0.95, 0.60, 1.50, 40, 40)]}
+    recs = C.build_context_corpus([_spec()], datasets=("MIMIC-IV", "MGB"),
+                                  results_by_trial=results)
+    panel = context_panel(recs)
+    assert len(panel.rows) == 2
+    mimic = next(r for r in panel.rows if r.dataset == "MIMIC-IV")
+    assert mimic.emulable and "Emulable" in mimic.why_emulable
+    assert mimic.why_divergent and "NCT-SEP" in mimic.why_divergent     # #32 one-liner
+    # rollup: MGB not fully measurable -> 1/2 fully; top proxy elements surfaced
+    assert panel.rollup.n_rows == 2 and panel.rollup.n_trials == 1
+    assert panel.rollup.pct_fully_measurable == 0.5
+    assert {e["concept"] for e in panel.rollup.top_proxy_elements} >= {"map", "death"}
+    assert panel.rollup.count_by_emulable["emulable"] >= 1
+
+
+def test_context_panel_joins_comparisons_what_and_why():
+    from tteEngine.contracts.context import context_panel
+    recs = C.build_context_corpus([_spec()], datasets=("MIMIC-IV",))
+    comps = [_cr("MIMIC-IV", 0.62, 0.45, 0.85, 300, 300)]
+    row = context_panel(recs, comparisons=comps).rows[0]
+    assert row.emulated_estimate == 0.62 and row.agreement is not None   # 'what' joined onto 'why'
+
+
 def run():
     import tempfile
     from pathlib import Path
