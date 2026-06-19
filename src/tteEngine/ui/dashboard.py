@@ -112,6 +112,7 @@ def trial_table(model: "DashboardModel") -> list[dict]:
     rows = []
     for c in model.cards:
         why = c.why or {}
+        conf = (c.confounders or {}).get("summary") or {}
         rows.append({
             "nct_id": c.nct_id,
             "ctgov": ctgov_url(c.nct_id),
@@ -125,6 +126,7 @@ def trial_table(model: "DashboardModel") -> list[dict]:
             "agreement": c.agreement,
             "emulable": why.get("emulable"),
             "score": why.get("emulability_score"),
+            "adjusted": conf.get("label"),  # e.g. "adjusted 6/8" (#104 confounder summary)
         })
     return rows
 
