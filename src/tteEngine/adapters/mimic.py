@@ -86,7 +86,7 @@ def _anchor_times(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
 
 
 def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
-            resolve: Resolver | None = None) -> pd.DataFrame:
+            resolve: Resolver | None = None, drug_matcher: dict | None = None) -> pd.DataFrame:
     """Build the canonical 5-col stream for `plan` from the given MIMIC `tables`.
 
     `tables` keys are MIMIC table names (admissions, diagnoses_icd, labevents,
@@ -104,6 +104,10 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     for req in plan.concepts:
         spec = TABLE_SPEC.get(req.event_type)
         if spec is None:
+            continue
+        # #131 seam A: when a drug_matcher is supplied, MEDICATION is matched BY CODE
+        # (gsn/ndc) + emitted as the arm concept, NOT by name — handled below.
+        if req.event_type == EventType.MEDICATION and drug_matcher:
             continue
         src = tables.get(spec["table"])
         if src is None or src.empty:
@@ -146,6 +150,37 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
                     "EVENT_TYPE": EventType.OUTCOME.value,
                     "EVENT_NAME": req.concept,          # e.g. "death"
                     "EVENT_VALUE": "1",
+                }))
+
+    # #131 seam A: code-based MEDICATION events. Match prescriptions by gsn/ndc to the
+    # arm concept's code set; emit EVENT_NAME=concept (so _assign_arm matches unchanged
+    # + code-correct), EVENT_VALUE=JSON {raw_name, code, method, dose, source_table}.
+    rx = tables.get("prescriptions")
+    if drug_matcher and rx is not None and not rx.empty:
+        from tteEngine.matching import assign_med_concepts, med_event_value
+        rows = rx[rx["hadm_id"].astype("int64").isin(hadm_ids)].copy()
+        if not rows.empty:
+            concept, code, method = assign_med_concepts(rows, ("gsn", "ndc"), drug_matcher)
+            rows = rows.assign(_concept=concept, _code=code, _method=method)
+            rows = rows[rows["_concept"].notna()]
+            rows["__ts"] = pd.to_datetime(rows.get("starttime"), utc=True, errors="coerce")
+            if anchors and not rows.empty:
+                anc = rows["hadm_id"].astype("int64").map(anchors)
+                rows = rows[anc.notna() & (rows["__ts"] >= anc + pd.to_timedelta(lo, "h"))
+                            & (rows["__ts"] <= anc + pd.to_timedelta(hi, "h"))]
+            if not rows.empty:
+                n = len(rows)
+                names = rows["drug"].tolist() if "drug" in rows.columns else [None] * n
+                doses = rows["dose_val_rx"].tolist() if "dose_val_rx" in rows.columns else [None] * n
+                values = [med_event_value(raw_name=nm, code=cd, method=mt, dose=ds,
+                                          source_table="prescriptions")
+                          for nm, cd, mt, ds in zip(names, rows["_code"], rows["_method"], doses)]
+                parts.append(pd.DataFrame({
+                    "TRAJECTORY_ID": rows["hadm_id"].astype("int64"),
+                    "TIMESTAMP": rows["__ts"],
+                    "EVENT_TYPE": EventType.MEDICATION.value,
+                    "EVENT_NAME": rows["_concept"].astype(str),          # the matched arm concept
+                    "EVENT_VALUE": values,
                 }))
 
     if not parts:

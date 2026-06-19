@@ -68,12 +68,16 @@ def _read_filtered(path: str, *, usecols, keep, dtype=None, chunksize: int = _CH
 # MIMIC-IV
 # --------------------------------------------------------------------------- #
 def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
-               resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None) -> dict:
+               resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None,
+               drug_matcher: dict | None = None) -> dict:
     """Load the plan-targeted MIMIC-IV tables for adapters.mimic.extract.
 
     `prepass` (optional #124 Prepass): when given, labevents/chartevents come from
     the shared pre-pass sliced to this cohort (no per-trial rescan of the 2.5/3.3GB
-    tables) — what makes lab COVARIATES feasible at >=1k scale."""
+    tables) — what makes lab COVARIATES feasible at >=1k scale.
+    `drug_matcher` (optional #131): when given, prescriptions are loaded by CODE
+    (gsn/ndc in the matcher's code union) rather than by drug name, so the adapter
+    can code-match meds (seam A)."""
     resolve = resolve or _identity
     hosp, icu = f"{root}/hosp", f"{root}/icu"
     types = {c.event_type for c in plan.concepts}
@@ -136,13 +140,23 @@ def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
                 ce["label"] = ce["itemid"].map(id2label)
                 tables["chartevents"] = ce
 
-    med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
-    if med_names:
-        tables["prescriptions"] = _read_filtered(
-            f"{hosp}/prescriptions.csv.gz",
-            usecols=["hadm_id", "drug", "starttime", "dose_val_rx", "gsn", "ndc"],  # gsn/ndc for #131 code-match
-            keep=lambda c: c["drug"].astype(str).str.lower().isin(med_names)
-            & c["hadm_id"].isin(cohort_hadm), chunksize=chunksize)
+    pcols = ["hadm_id", "drug", "starttime", "dose_val_rx", "gsn", "ndc"]
+    if drug_matcher:  # #131: load cohort prescriptions whose CODE is in the matcher union
+        from tteEngine.matching import _norm_code
+        codeunion = {k for cs in drug_matcher.values() for k in cs.codes}
+        if codeunion:
+            tables["prescriptions"] = _read_filtered(
+                f"{hosp}/prescriptions.csv.gz", usecols=pcols,
+                keep=lambda c: c["hadm_id"].isin(cohort_hadm)
+                & (c["gsn"].map(_norm_code).isin(codeunion) | c["ndc"].map(_norm_code).isin(codeunion)),
+                chunksize=chunksize)
+    else:
+        med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
+        if med_names:
+            tables["prescriptions"] = _read_filtered(
+                f"{hosp}/prescriptions.csv.gz", usecols=pcols,
+                keep=lambda c: c["drug"].astype(str).str.lower().isin(med_names)
+                & c["hadm_id"].isin(cohort_hadm), chunksize=chunksize)
     return tables
 
 
@@ -154,11 +168,14 @@ _EICU_VITAL_FILES = {"vitalperiodic": "vitalPeriodic.csv.gz", "vitalaperiodic": 
 
 
 def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
-              resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None) -> dict:
+              resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None,
+              drug_matcher: dict | None = None) -> dict:
     """Load the plan-targeted eICU-CRD tables for adapters.eicu.extract.
 
     `prepass` (optional #124 Prepass): lab/vitalperiodic come from the shared
-    pre-pass sliced to this cohort (no per-trial rescan) when supplied."""
+    pre-pass sliced to this cohort (no per-trial rescan) when supplied.
+    `drug_matcher` (optional #131): medication loaded by CODE (drughiclseqno in the
+    matcher's code union) rather than by drug name, for the adapter's code-match."""
     resolve = resolve or _identity
     types = {c.event_type for c in plan.concepts}
     tables: dict[str, pd.DataFrame] = {}
@@ -203,13 +220,22 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
                 keep=lambda c: c["labname"].astype(str).str.lower().isin(lab_names)
                 & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
 
-    med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
-    if med_names:
-        tables["medication"] = _read_filtered(
-            f"{root}/medication.csv.gz",
-            usecols=["patientunitstayid", "drugstartoffset", "drugname", "dosage", "drughiclseqno"],  # HICL for #131
-            keep=lambda c: c["drugname"].astype(str).str.lower().isin(med_names)
-            & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
+    mcols = ["patientunitstayid", "drugstartoffset", "drugname", "dosage", "drughiclseqno"]
+    if drug_matcher:  # #131: load cohort medication whose HICL code is in the matcher union
+        from tteEngine.matching import _norm_code
+        codeunion = {k for cs in drug_matcher.values() for k in cs.codes}
+        if codeunion:
+            tables["medication"] = _read_filtered(
+                f"{root}/medication.csv.gz", usecols=mcols,
+                keep=lambda c: c["patientunitstayid"].isin(cohort_stays)
+                & c["drughiclseqno"].map(_norm_code).isin(codeunion), chunksize=chunksize)
+    else:
+        med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
+        if med_names:
+            tables["medication"] = _read_filtered(
+                f"{root}/medication.csv.gz", usecols=mcols,
+                keep=lambda c: c["drugname"].astype(str).str.lower().isin(med_names)
+                & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
 
     if EventType.MEASUREMENT in types and "vitalperiodic" in pp_tables:
         tables["vitalperiodic"] = pp_tables["vitalperiodic"]   # #124 pre-pass slice
@@ -272,7 +298,8 @@ def _enrich_vocab_from_index(plan: ExtractionPlan, index: dict) -> None:
 
 def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT,
                     eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK,
-                    use_vocab_index: bool = True, index_cache_dir=None, prepasses=None):
+                    use_vocab_index: bool = True, index_cache_dir=None, prepasses=None,
+                    use_drug_codes: bool = True, drug_catalog_cache=None):
     """Return the `extract_fn(plan, spec, dataset) -> canonical 5-col DataFrame |
     None` that probe's #102 run_corpus consumes: load the plan-targeted real tables
     for `dataset` and run the matching adapter.
@@ -289,11 +316,11 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
 
     _resolve = resolve or vocab.resolve
     allowed = set(datasets) if datasets else None
+    roots = {"MIMIC-IV": mimic_root, "eICU-CRD": eicu_root}
 
     indexes: dict[str, dict] = {}
     if use_vocab_index:
         from tteEngine.adapters import vocab_index as VI
-        roots = {"MIMIC-IV": mimic_root, "eICU-CRD": eicu_root}
         for ds in (datasets or ("MIMIC-IV", "eICU-CRD")):
             if ds in roots:
                 try:
@@ -302,19 +329,33 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
                 except Exception:
                     pass  # degrade gracefully to the curated vocab
 
+    def _matcher(spec, dataset):
+        if not (use_drug_codes and spec is not None and dataset in roots):
+            return None
+        try:  # cached drug catalog -> {arm_concept: DrugCodeSet} (#131 seam A)
+            from tteEngine.matching import build_drug_matcher
+            from tteEngine.matching import DRUG_CATALOG_CACHE
+            return build_drug_matcher(spec, dataset, root=roots[dataset],
+                                      cache_dir=drug_catalog_cache or DRUG_CATALOG_CACHE)
+        except Exception:
+            return None  # degrade to name matching
+
     def extract_fn(plan, spec, dataset):
         if allowed is not None and dataset not in allowed:
             return None
         idx = indexes.get(dataset)
         if idx is not None:
             _enrich_vocab_from_index(plan, idx)   # data-driven codes for this trial
-        pp = (prepasses or {}).get(dataset)   # #124 shared pre-pass (full mode), if supplied
+        pp = (prepasses or {}).get(dataset)       # #124 shared pre-pass (full mode), if supplied
+        dm = _matcher(spec, dataset)              # #131 code-based med matcher, if enabled
         if dataset == "MIMIC-IV":
             df = mimic.extract(plan, load_mimic(plan, root=mimic_root, resolve=_resolve,
-                                                chunksize=chunksize, prepass=pp), resolve=_resolve)
+                                                chunksize=chunksize, prepass=pp, drug_matcher=dm),
+                               resolve=_resolve, drug_matcher=dm)
         elif dataset == "eICU-CRD":
             df = eicu.extract(plan, load_eicu(plan, root=eicu_root, resolve=_resolve,
-                                              chunksize=chunksize, prepass=pp), resolve=_resolve)
+                                              chunksize=chunksize, prepass=pp, drug_matcher=dm),
+                              resolve=_resolve, drug_matcher=dm)
         else:
             return None  # MGB is human-gated (#8); unknown datasets unsupported
         return df if df is not None and not df.empty else None

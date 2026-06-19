@@ -266,11 +266,64 @@ def to_match_provenance(match: "CodeMatch", *, trajectory_id: int, arm: str,
         method=Confidence(match.method), t_rel_hours=t_rel_hours, source_table=source_table)
 
 
+def med_event_value(*, raw_name, code, method, dose=None, source_table=None) -> str:
+    """The EVENT_VALUE JSON the adapter writes for a code-matched medication event
+    (seam A): {raw_name, code, method, dose, source_table}. The cohort seam reads it
+    back via provenance_from_event_value."""
+    return json.dumps({"raw_name": None if raw_name is None else str(raw_name),
+                       "code": None if code is None else str(code), "method": method,
+                       "dose": None if dose is None else str(dose), "source_table": source_table})
+
+
+def provenance_from_event_value(event_value: str, *, trajectory_id: int, arm: str,
+                                concept: str | None = None, t_rel_hours: float | None = None):
+    """Build a contracts.audit.MatchProvenance from a code-matched med event's
+    EVENT_VALUE JSON (seam A) + cohort context — the helper tte1's arm_match_fn uses."""
+    from tteEngine.contracts.audit import Confidence, MatchProvenance
+
+    try:
+        meta = json.loads(event_value) if event_value else {}
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+    method = meta.get("method") or SUBSTRING
+    return MatchProvenance(
+        trajectory_id=int(trajectory_id), arm=arm,
+        matched_event_name=meta.get("raw_name"), matched_code=meta.get("code"),
+        concept=concept, method=Confidence(method) if method in {c for c in
+                                                                  (RXNORM, ICD_HIERARCHY, INGREDIENT, NAME, SUBSTRING)} else Confidence(SUBSTRING),
+        t_rel_hours=t_rel_hours, source_table=meta.get("source_table"))
+
+
+def assign_med_concepts(df, code_fields, drug_matcher: dict):
+    """Vectorized: which arm concept (+ matched code/method) each medication row
+    code-matches, via the drug_matcher {concept: DrugCodeSet}. First concept whose
+    code set contains any of the row's code-field values wins. Returns three Series
+    (concept, matched_code, method) aligned to df; None where no code match."""
+    import pandas as pd
+
+    concept = pd.Series([None] * len(df), index=df.index, dtype=object)
+    matched_code = pd.Series([None] * len(df), index=df.index, dtype=object)
+    method = pd.Series([None] * len(df), index=df.index, dtype=object)
+    norm = {fld: df[fld].map(_norm_code) for fld in code_fields if fld in df.columns}
+    for c, cs in drug_matcher.items():
+        codeset = cs.codes
+        if not codeset:
+            continue
+        for ncol in norm.values():
+            hit = ncol.isin(codeset) & concept.isna()
+            if hit.any():
+                concept.loc[hit] = c
+                matched_code.loc[hit] = ncol[hit].map(lambda k: codeset[k].code)
+                method.loc[hit] = ncol[hit].map(lambda k: codeset[k].method)
+    return concept, matched_code, method
+
+
 __all__ = [
     "RXNORM", "ICD_HIERARCHY", "INGREDIENT", "NAME", "SUBSTRING",
     "TIER_RANK", "LOW_CONFIDENCE", "CodeMatch",
     "IcdCodeSet", "ICD_FAMILIES", "condition_codeset",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
     "DRUG_CODE_FIELDS", "build_drug_matcher", "DRUG_CATALOG_CACHE",
-    "SOURCE_TABLES", "to_match_provenance",
+    "SOURCE_TABLES", "to_match_provenance", "med_event_value",
+    "provenance_from_event_value", "assign_med_concepts",
 ]
