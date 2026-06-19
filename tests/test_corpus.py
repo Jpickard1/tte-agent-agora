@@ -117,3 +117,54 @@ def test_benchmark_aggregates_and_reports_drops():
     assert "by_dataset" in summary and set(summary["by_dataset"]) == {"MIMIC-IV", "eICU-CRD"}
     assert summary["n_dropped"] == 0
     assert summary["drops_by_reason"] == {}
+
+
+def _raw_coded_stream():
+    """sepsis dx as ICD 'A41', steroid as code 'C05' — concept-level criteria
+    only match once a resolver maps codes -> concepts."""
+    from datetime import datetime, timedelta, timezone
+
+    from tteEngine.contracts.events import CANONICAL_COLUMNS
+    t0 = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    rows, tid = [], 1
+    for treated, dies in [(True, True), (True, False), (False, True), (False, False)]:
+        rows.append((tid, t0 + timedelta(hours=-1), "diagn", "A41", "1"))      # sepsis (ICD)
+        rows.append((tid, t0, "lab", "lactate", "4.0"))
+        if treated:
+            rows.append((tid, t0 + timedelta(hours=2), "medic", "C05", "50"))  # hydrocortisone (code)
+        if dies:
+            rows.append((tid, t0 + timedelta(hours=120), "outco", "death", "1"))
+        tid += 1
+    df = pd.DataFrame(rows, columns=list(CANONICAL_COLUMNS))
+    df["TRAJECTORY_ID"] = df["TRAJECTORY_ID"].astype("int64")
+    df["TIMESTAMP"] = pd.to_datetime(df["TIMESTAMP"], utc=True)
+    return df
+
+
+def _code_resolver(name):
+    return {"A41": "sepsis", "C05": "hydrocortisone"}.get(name, name)
+
+
+def test_run_corpus_resolve_bridges_raw_codes():
+    job = [({"nct": "NCT1"}, vig.demo_spec().model_copy(update={"nct_id": "NCT1"}))]
+    raw = lambda plan, spec, ds: _raw_coded_stream()  # noqa: E731
+
+    # identity (no resolve): raw codes don't match concept-level criteria -> dropped
+    d1 = DropLog()
+    r1 = list(run_corpus(job, ["MIMIC-IV"], extract_fn=raw, engine_fn=_crude_engine,
+                         compare_fn=_stub_compare, drops=d1))
+    assert r1 == [] and len(d1) == 1
+
+    # with resolver: codes -> concepts -> eligible + treated arm -> emulable
+    d2 = DropLog()
+    r2 = list(run_corpus(job, ["MIMIC-IV"], extract_fn=raw, engine_fn=_crude_engine,
+                         compare_fn=_stub_compare, resolve=_code_resolver, drops=d2))
+    assert len(r2) == 1 and len(d2) == 0
+
+
+def test_make_cohort_provider_threads_resolver():
+    from tteEngine.orchestration import make_cohort_provider
+    spec = vig.demo_spec()
+    prov = make_cohort_provider(resolve=_code_resolver)
+    cohort = prov(_raw_coded_stream(), spec, "MIMIC-IV")
+    assert cohort.n_total == 4  # all four raw-coded patients now eligible

@@ -66,6 +66,7 @@ def run_corpus(
     compare_fn: Callable | None = None,
     plan_fn: Callable | None = None,
     drops: DropLog | None = None,
+    resolve=None,
 ) -> Iterator[ComparisonResult]:
     """Stream one ComparisonResult per (trial x dataset) that emulates cleanly.
 
@@ -94,7 +95,7 @@ def run_corpus(
                 if events is None or len(events) == 0:
                     drops.add(nct, ds, "no extractable events")
                     continue
-                cohort = build_cohort(events, spec, dataset=ds)
+                cohort = build_cohort(events, spec, dataset=ds, resolve=resolve)
                 if cohort.n_total == 0:
                     drops.add(nct, ds, "empty cohort after eligibility")
                     continue

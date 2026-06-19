@@ -7,6 +7,12 @@ component call is a thin wrapper with a graceful fallback so a missing DB/engine
 degrades instead of hard-failing the batch over trials x DBs.
 """
 
-from .pipeline import STEPS, Pipeline, TargetRequest, default_providers
+from .pipeline import (
+    STEPS,
+    Pipeline,
+    TargetRequest,
+    default_providers,
+    make_cohort_provider,
+)
 
-__all__ = ["Pipeline", "TargetRequest", "STEPS", "default_providers"]
+__all__ = ["Pipeline", "TargetRequest", "STEPS", "default_providers", "make_cohort_provider"]
