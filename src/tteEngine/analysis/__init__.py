@@ -15,6 +15,12 @@ from ..contracts.results import ComparisonResult, EffectMeasure, TTEResult
 from .runner import add_treatment_indicator, run_tte
 from .compare import compare_trial, parse_reported_effect
 from .benchmark import benchmark_trials, run_benchmark
+from .robustness import (
+    NegativeControlResult,
+    SensitivityReport,
+    negative_control_check,
+    sensitivity_report,
+)
 
 __all__ = [
     "run_tte",
@@ -26,4 +32,8 @@ __all__ = [
     "compare_trial",
     "run_benchmark",
     "benchmark_trials",
+    "sensitivity_report",
+    "SensitivityReport",
+    "negative_control_check",
+    "NegativeControlResult",
 ]
