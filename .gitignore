@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# reproducibility regen output + ctgov fetch cache (frozen snapshot is committed)
+outputs/
+data/_ctgov_cache/
