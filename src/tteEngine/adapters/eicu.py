@@ -82,6 +82,19 @@ def _ts(offset_min: pd.Series) -> pd.Series:
     return EPOCH + pd.to_timedelta(pd.to_numeric(offset_min, errors="coerce"), unit="m")
 
 
+def _icd_match(series: "pd.Series", codes: set[str]) -> "pd.Series":
+    """Boolean mask for eICU icd9code, which packs SEVERAL codes per field
+    ('995.92, A41.9'). A row matches if any requested code is one of its
+    comma/semicolon-separated tokens. Single-code fields work as before."""
+    codeset = set(codes)
+
+    def hit(val: str) -> bool:
+        toks = {t.strip() for t in str(val).replace(";", ",").split(",") if t.strip()}
+        return bool(toks & codeset)
+
+    return series.astype(str).map(hit)
+
+
 def _cohort_stays(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
                   resolve: Resolver) -> set[int]:
     """In-cohort stays = those with a diagnosis matching any cohort-filter concept.
@@ -95,7 +108,7 @@ def _cohort_stays(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
     dx = tables.get("diagnosis")
     if dx is None or dx.empty:
         return set()
-    hit = dx[dx["icd9code"].astype(str).isin(codes)]
+    hit = dx[_icd_match(dx["icd9code"], codes)]
     return set(hit[_STAY].astype("int64"))
 
 
@@ -204,8 +217,10 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
         if src is None or src.empty:
             continue
         codes = resolve(req.concept)
-        rows = src[src[_STAY].astype("int64").isin(stays)
-                   & src[spec["name"]].astype(str).isin(codes)].copy()
+        name_match = (_icd_match(src[spec["name"]], codes)        # multi-code icd9 field
+                      if req.event_type == EventType.DIAGNOSIS
+                      else src[spec["name"]].astype(str).isin(codes))
+        rows = src[src[_STAY].astype("int64").isin(stays) & name_match].copy()
         if rows.empty:
             continue
         off = pd.to_numeric(rows[spec["offset"]], errors="coerce")
