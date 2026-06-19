@@ -127,3 +127,24 @@ def run_corpus_benchmark(
     summary["n_dropped"] = len(drops)
     summary["drops_by_reason"] = drops.by_reason()
     return summary, drops
+
+
+def run_corpus_to_jsonl(jobs, datasets, path, *, drops: DropLog | None = None, **kwargs):
+    """Run the corpus and PERSIST every ComparisonResult to JSONL in one streaming
+    pass, via the import-light contracts I/O (orchestration never imports analysis).
+    Returns (n_written, drops). Read back / analyze OFFLINE from the saved corpus:
+
+        from tteEngine.contracts.io import load_comparisons_jsonl
+        from tteEngine.analysis import run_benchmark, meta_analyze
+        run_benchmark(load_comparisons_jsonl(path))   # summary
+        meta_analyze(load_comparisons_jsonl(path))     # #64 headline + forest
+        # figures #60 / UI #49 read the same load_comparisons_jsonl(path)
+
+    This is the bridge from the gated live MIMIC/eICU run to every downstream
+    deliverable: the corpus is persisted ONCE and read many times.
+    """
+    from tteEngine.contracts.io import dump_comparisons_jsonl
+
+    drops = drops if drops is not None else DropLog()
+    n = dump_comparisons_jsonl(run_corpus(jobs, datasets, drops=drops, **kwargs), path)
+    return n, drops
