@@ -75,7 +75,8 @@ def make_engine_provider(
     covariates = covariates or []
 
     def provider(events, cohort, spec) -> TTEResult:
-        from tteEngine.analysis import add_treatment_indicator, run_tte
+        from tteEngine.analysis import (add_treatment_indicator, outcome_column,
+                                        run_tte, select_measurable_outcome)
         from tteEngine.cohort import build_analysis_frame
 
         treated = next((a.name for a in cohort.arms if not a.is_control), None)
@@ -85,7 +86,14 @@ def make_engine_provider(
                              extra={"error": "no treated arm or no outcome"})
         frame = build_analysis_frame(events, cohort, spec, covariates=covariates)
         frame = add_treatment_indicator(frame, group_col="group", treated_value=treated)
-        outcome_col = f"outcome_{spec.outcomes[0].name.replace(' ', '_')}"
+        # #146: emulate the MEASURABLE outcome (prefer binary mortality), not blindly
+        # spec.outcomes[0] (often a non-mortality ctgov endpoint -> KeyError/empty drop).
+        outcome = select_measurable_outcome(spec, frame.columns)
+        if outcome is None:
+            return TTEResult(nct_id=spec.nct_id, dataset=cohort.dataset, method=adjustment,
+                             measure=EffectMeasure.RR, estimate=float("nan"),
+                             extra={"error": "no measurable outcome in dataset"})
+        outcome_col = outcome_column(outcome.name)
         frame[outcome_col] = frame[outcome_col].astype(int)
         r = run_tte(frame, outcome_col=outcome_col, covariates=[c.name for c in covariates],
                     adjustment=adjustment, outcome_kind=outcome_kind)
