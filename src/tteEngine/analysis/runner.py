@@ -114,6 +114,7 @@ def run_tte(
 
     est = _f(res.get("estimate"))
     ev = res.get("e_value") or {}
+    bal = res.get("balance") or {}
     return TTEResult(
         nct_id=nct_id,
         dataset=dataset,
@@ -138,6 +139,11 @@ def run_tte(
             "n_unbalanced_before": res.get("n_unbalanced_before"),
             "n_unbalanced_after": res.get("n_unbalanced_after"),
             "balance": _balance_rows(res.get("balance")),
+            # #105: surface the covariates actually in the model + the PS-overlap /
+            # common-support diagnostic (computed by the engine but previously dropped),
+            # so the confounder-adjustability ledger + UI can read them from the corpus.
+            "covariates_used": list(bal.get("covars") or []),
+            "ps_overlap": bal.get("overlap"),
             "test": res.get("test"),
         },
     )

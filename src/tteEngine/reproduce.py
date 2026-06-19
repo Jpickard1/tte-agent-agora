@@ -111,6 +111,17 @@ def _write_context(studies, comparisons, datasets, out) -> int:
                                  datasets=tuple(datasets), results_by_trial=results_by_trial)
 
 
+def _write_ledger(studies, comparisons, out) -> int:
+    """Emit the #105 confounder adjustability ledger sidecar (ledger.jsonl) next to
+    corpus.jsonl, joined on (nct_id, dataset). Gated import-light."""
+    try:
+        from .adjustability import write_ledger_sidecar
+    except ImportError:
+        return 0
+    specs = [study_to_spec(s) for s in studies]
+    return write_ledger_sidecar(comparisons, specs, out / "ledger.jsonl")
+
+
 def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
               datasets=DATASETS, emulate=None, context: bool = True) -> dict:
     """Deterministically regenerate the FULL gallery from the frozen ctgov snapshot:
@@ -133,6 +144,7 @@ def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
     out.mkdir(parents=True, exist_ok=True)
     dump_comparisons_jsonl(comparisons, out / "corpus.jsonl")
     n_context = _write_context(studies, comparisons, datasets, out) if context else 0
+    n_ledger = _write_ledger(studies, comparisons, out) if context else 0
     meta = meta_analyze(comparisons,
                         subgroup=lambda c: "sepsis" if c.nct_id in sepsis_ncts else "other")
     cal = corpus_calibration(comparisons)
@@ -142,6 +154,7 @@ def reproduce(*, corpus_path=FROZEN_CORPUS, out_dir="outputs", seed: int = SEED,
         "n_studies": len(studies),
         "n_comparisons": len(comparisons),
         "n_context": n_context,
+        "n_ledger": n_ledger,
         "concordance_rate": meta.overall_concordance.rate,
         "calibration_slope": cal.slope,
         "i2": meta.pooled_effect.i2,
