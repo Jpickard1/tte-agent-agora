@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 _NUMERIC_CMP = {Comparator.GT, Comparator.GE, Comparator.LT, Comparator.LE, Comparator.EQ}
 
 
+def _identity(name):
+    return name
+
+
 def _index_times(events: "pd.DataFrame", spec: TargetTrialSpec) -> dict[int, "pd.Timestamp"]:
     """Landmark t0 per trajectory: first event matching the anchor, else the
     trajectory's earliest event. anchor 'icu_admission' maps to LOCATION events.
@@ -64,7 +68,10 @@ def _criterion_satisfied(traj_events: "pd.DataFrame", crit: EligibilityCriterion
         # match raw EVENT_NAME==concept OR resolve(EVENT_NAME)==concept, so both
         # concept-name streams (synthetic) and raw-coded adapter streams (#5<->#9) work.
         names = sub["EVENT_NAME"]
-        sub = sub[(names == crit.concept) | (names.map(resolve) == crit.concept)]
+        mask = names == crit.concept
+        if resolve is not _identity:  # skip the per-row map under the identity default (#36 scale)
+            mask = mask | (names.map(resolve) == crit.concept)
+        sub = sub[mask]
     sub = _window_mask(sub, t0, crit.window_hours)
     if len(sub) == 0:
         return False
@@ -108,13 +115,13 @@ def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve)
     grace = spec.time_zero.grace_window_hours
     treatment_arms = [a for a in spec.arms if not a.is_control]
     control = next((a for a in spec.arms if a.is_control), None)
+    is_med = traj_events["EVENT_TYPE"] == EventType.MEDICATION.value
+    names = traj_events["EVENT_NAME"]
     for arm in treatment_arms:
-        names = traj_events["EVENT_NAME"]
-        meds = traj_events[
-            (traj_events["EVENT_TYPE"] == EventType.MEDICATION.value)
-            & (names.isin(arm.intervention_concepts)
-               | names.map(resolve).isin(arm.intervention_concepts))
-        ]
+        match = names.isin(arm.intervention_concepts)
+        if resolve is not _identity:  # skip the per-row map under the identity default (#36 scale)
+            match = match | names.map(resolve).isin(arm.intervention_concepts)
+        meds = traj_events[is_med & match]
         meds = _window_mask(meds, t0, (0.0, grace))
         if len(meds) > 0:
             return arm.name
@@ -138,7 +145,7 @@ def build_cohort(
     """
     if validate:
         validate_canonical(events)
-    _resolve = resolve or (lambda name: name)
+    _resolve = resolve or _identity
 
     t0_all = _index_times(events, spec)
     arms: dict[str, list[int]] = {}
