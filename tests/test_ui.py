@@ -281,3 +281,45 @@ def test_stepper_html_progress_states():
     assert "✓" in html  # the step before active is checked
     # the stepper CSS it depends on is present in the theme
     assert ".step.active .node" in theme.CSS
+
+
+# ---- #130: assignment-audit join + 'how patients were sorted' render ----
+
+def _audit_rec(nct="NCT1", dataset="MIMIC-IV"):
+    from tteEngine.contracts.audit import (ArmAudit, AssignmentAudit, Confidence,
+                                           EligibilityDecision, MatchProvenance)
+    return AssignmentAudit(
+        nct_id=nct, dataset=dataset, n_screened=100, n_eligible=80, n_enrolled=70,
+        n_excluded_immortal=4, n_unassigned=6,
+        arms=[ArmAudit(name="hydrocortisone", n=40, defining_codes=["RxNorm:5492"],
+                       match_method_counts={"rxnorm_code": 38, "substring": 2}),
+              ArmAudit(name="control", is_control=True, n=30)],
+        eligibility=[EligibilityDecision(concept="sepsis", event_type="diagn", result="met"),
+                     EligibilityDecision(concept="age", event_type="demog", measurable=False,
+                                         result="skipped_unmeasurable", reason="no demographics")],
+        sample=[MatchProvenance(trajectory_id=1, arm="hydrocortisone",
+                                matched_event_name="hydrocortisone na succ.", matched_code="RxNorm:5492",
+                                method=Confidence.RXNORM_CODE, t_rel_hours=2.0)],
+        n_low_confidence=2)
+
+
+def test_build_dashboard_joins_audit_onto_cards():
+    pytest.importorskip("numpy"); pytest.importorskip("statsmodels")
+    from tteEngine.ui import build_dashboard
+    rows = [_cr("NCT1", "MIMIC-IV", 0.6, Agreement.CONCORDANT)]
+    m = build_dashboard(rows, audit_records=[_audit_rec()])
+    audit = m.cards[0].audit
+    assert audit is not None
+    assert audit["n_screened"] == 100 and audit["n_low_confidence"] == 2
+    assert audit["arms"][0]["match_method_counts"]["rxnorm_code"] == 38
+    assert any(e["result"] == "skipped_unmeasurable" for e in audit["eligibility"])
+
+
+def test_render_sorting_runs(monkeypatch):
+    pytest.importorskip("streamlit"); pytest.importorskip("pandas")
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    import results_app as app
+    # _render_sorting should consume the audit dict without error (smoke)
+    app._render_sorting(_audit_rec().model_dump())
