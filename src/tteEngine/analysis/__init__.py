@@ -48,6 +48,7 @@ from .meta import (
     random_effects,
     wilson_ci,
 )
+from .outcomes import is_mortality_outcome, outcome_column, select_measurable_outcome
 from .reliability import CalibrationCurve, CalibrationPoint, corpus_calibration
 from .drivers import (
     DriverReport,
@@ -93,6 +94,9 @@ __all__ = [
     "load_comparisons_jsonl",
     "dump_comparisons_jsonl",
     "corpus_calibration",
+    "select_measurable_outcome",
+    "outcome_column",
+    "is_mortality_outcome",
     "CalibrationCurve",
     "CalibrationPoint",
     "concordance_drivers",
