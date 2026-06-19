@@ -20,6 +20,9 @@ from typing import Callable
 from pydantic import BaseModel, Field
 
 from ..contracts.results import Agreement, ComparisonResult, EffectMeasure
+# JSONL corpus persistence now lives in import-light contracts.io (so the
+# orchestration can persist without importing analysis); re-exported for back-compat.
+from ..contracts.io import dump_comparisons_jsonl, load_comparisons_jsonl  # noqa: F401
 
 _RATIO = {EffectMeasure.OR, EffectMeasure.HR, EffectMeasure.RR}
 _Z = 1.959963984540054  # 97.5th percentile of the standard normal
@@ -150,28 +153,3 @@ def meta_analyze(comparisons, *, subgroup: Callable[[ComparisonResult], str] | N
             report.by_subgroup.append(SubgroupMeta(
                 name=name, concordance=concordance_summary(g), pooled_effect=pooled_effect(g)))
     return report
-
-
-# --- corpus persistence (JSONL) ------------------------------------------------
-# #36 streams ComparisonResults in-memory; these materialize the stream ONCE so
-# #64 (this), figures (#60) and the UI (#49) read the saved corpus offline (no
-# re-extraction). Schema = one ComparisonResult.model_dump_json() per line.
-
-def dump_comparisons_jsonl(comparisons, path) -> int:
-    """Persist a ComparisonResult stream to JSONL (one model_dump_json per line).
-    Streams — safe for a >10k corpus. Returns the count written."""
-    n = 0
-    with open(path, "w") as f:
-        for c in comparisons:
-            f.write(c.model_dump_json() + "\n")
-            n += 1
-    return n
-
-
-def load_comparisons_jsonl(path):
-    """Iterate ComparisonResult from a JSONL dump (lazy — streams into meta_analyze)."""
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                yield ComparisonResult.model_validate_json(line)
