@@ -8,6 +8,7 @@ calibration metric=#41) — it visualizes.
 
 from .calibration import calibration_plot, calibration_points
 from .forest import ForestRow, forest_plot, forest_rows
+from .km import km_data, km_plot, km_survival
 
 __all__ = [
     "ForestRow",
@@ -15,4 +16,7 @@ __all__ = [
     "forest_plot",
     "calibration_points",
     "calibration_plot",
+    "km_survival",
+    "km_data",
+    "km_plot",
 ]

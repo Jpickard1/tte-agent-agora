@@ -105,3 +105,42 @@ def test_calibration_plot_empty_raises(tmp_path):
         slope = intercept = coverage = None
     with pytest.raises(ValueError):
         calibration_plot(Empty(), tmp_path / "x.png")
+
+
+# --- KM figure (#60): per-cohort survival (pure KM, no lifelines) ---
+
+def test_km_survival_product_limit():
+    from tteEngine.figures import km_survival
+    # 4 at risk; deaths at t=1 and t=3, censor at t=2, survivor at t=5
+    curve = km_survival([1, 2, 3, 5], [1, 0, 1, 0])
+    # S(1)=1*(1-1/4)=0.75 ; at t=3, at_risk=2 -> S=0.75*(1-1/2)=0.375
+    pts = dict(curve)
+    assert pts[0.0] == 1.0
+    assert abs(pts[1.0] - 0.75) < 1e-9
+    assert abs(pts[3.0] - 0.375) < 1e-9
+
+
+def test_km_data_per_group():
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame({
+        "group": ["t", "t", "c", "c"],
+        "time": [1, 5, 1, 5],
+        "event": [1, 0, 0, 1],
+    })
+    from tteEngine.figures import km_data
+    curves = km_data(frame)
+    assert set(curves) == {"t", "c"}
+    assert curves["t"][0] == (0.0, 1.0)
+
+
+def test_km_plot_writes_file(tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("matplotlib")
+    frame = pd.DataFrame({
+        "group": ["t"] * 4 + ["c"] * 4,
+        "time": [1, 2, 3, 5, 1, 2, 3, 5],
+        "event": [1, 0, 1, 0, 1, 1, 0, 0],
+    })
+    from tteEngine.figures import km_plot
+    out = tmp_path / "km.png"
+    assert km_plot(frame, out) == str(out) and out.exists() and out.stat().st_size > 0
