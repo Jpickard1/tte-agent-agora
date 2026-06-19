@@ -155,7 +155,13 @@ def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
     if drug_matcher:  # #131: load cohort prescriptions whose CODE is in the matcher union
         from tteEngine.matching import _norm_code
         codeunion = {k for cs in drug_matcher.values() for k in cs.codes}
-        if codeunion:
+        if "prescriptions" in pp_tables:
+            # #171: the drug pre-pass already scanned prescriptions ONCE (corpus-union
+            # codes); pp_tables is this cohort's slice. The adapter's drug_matcher
+            # narrows to THIS trial's arm codes, so the result is byte-identical to the
+            # per-trial read below — without re-decompressing the 579MB file each trial.
+            tables["prescriptions"] = pp_tables["prescriptions"]
+        elif codeunion:
             tables["prescriptions"] = _read_filtered(
                 f"{hosp}/prescriptions.csv.gz", usecols=pcols,
                 keep=lambda c: c["hadm_id"].isin(cohort_hadm)
@@ -244,7 +250,9 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
     if drug_matcher:  # #131: load cohort medication whose HICL code is in the matcher union
         from tteEngine.matching import _norm_code
         codeunion = {k for cs in drug_matcher.values() for k in cs.codes}
-        if codeunion:
+        if "medication" in pp_tables:
+            tables["medication"] = pp_tables["medication"]   # #171: corpus-union pre-pass slice
+        elif codeunion:
             tables["medication"] = _read_filtered(
                 f"{root}/medication.csv.gz", usecols=mcols,
                 keep=lambda c: c["patientunitstayid"].isin(cohort_stays)
@@ -316,11 +324,32 @@ def _enrich_vocab_from_index(plan: ExtractionPlan, index: dict) -> None:
             reg(req.concept, cat)
 
 
+def _merge_drug_prepass(existing, dataset, specs, *, root, drug_catalog_cache,
+                        drug_prepass_cache, refresh):
+    """#171: build the corpus-union drug pre-pass for `dataset` and fold it into any
+    `existing` Prepass (e.g. a full-mode lab/chart pre-pass) so one Prepass carries
+    every pre-scanned table. Returns the (possibly new) Prepass, or `existing` if the
+    corpus has no resolvable drug codes."""
+    from tteEngine.adapters import prepass as PP
+    codes = PP.corpus_drug_codes(specs, dataset, root=root, cache_dir=drug_catalog_cache)
+    if not codes:
+        return existing
+    kw = {"drug_codes": codes, "root": root, "refresh": refresh}
+    if drug_prepass_cache is not None:
+        kw["drug_cache_dir"] = drug_prepass_cache
+    pp = PP.build_mimic_prepass(**kw) if dataset == "MIMIC-IV" else PP.build_eicu_prepass(**kw)
+    if existing is not None:                     # keep the lab/chart tables too
+        existing.tables.update(pp.tables)
+        return existing
+    return pp
+
+
 def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT,
                     eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK,
                     use_vocab_index: bool = True, index_cache_dir=None, prepasses=None,
                     use_drug_codes: bool = True, drug_catalog_cache=None,
-                    use_dx_codes: bool = True):
+                    use_dx_codes: bool = True, drug_prepass: bool = False,
+                    corpus_specs=None, drug_prepass_cache=None, prepass_refresh: bool = False):
     """Return the `extract_fn(plan, spec, dataset) -> canonical 5-col DataFrame |
     None` that probe's #102 run_corpus consumes: load the plan-targeted real tables
     for `dataset` and run the matching adapter.
@@ -331,13 +360,32 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
     are auto-registered onto the vocab before extraction — so a real ctgov condition
     ('Sepsis') resolves to that dataset's real codes (177 sepsis codes, not the
     curated 44) and the cohort is non-empty. Datasets not handled here (MGB —
-    human-gated; or any outside `datasets`) return None (run_corpus logs the drop)."""
+    human-gated; or any outside `datasets`) return None (run_corpus logs the drop).
+
+    `drug_prepass=True` + `corpus_specs` (#171): scan the big prescriptions/medication
+    tables ONCE, pre-filtered to the corpus-union of arm drug codes, cached on /ewsc;
+    each trial then SLICES its cohort instead of re-decompressing the 579MB file —
+    so a >10k-trial run (#111) isn't bottlenecked. PURE caching: byte-identical
+    cohort/arm assignment to the per-trial read (the adapter still narrows to each
+    trial's arm codes)."""
     from tteEngine import vocab
     from tteEngine.adapters import eicu, mimic
 
     _resolve = resolve or vocab.resolve
     allowed = set(datasets) if datasets else None
     roots = {"MIMIC-IV": mimic_root, "eICU-CRD": eicu_root}
+
+    if drug_prepass and corpus_specs:           # #171: build the corpus-union drug pre-pass ONCE
+        prepasses = dict(prepasses or {})
+        for ds in (datasets or ("MIMIC-IV", "eICU-CRD")):
+            if ds in roots:
+                try:
+                    prepasses[ds] = _merge_drug_prepass(
+                        prepasses.get(ds), ds, corpus_specs, root=roots[ds],
+                        drug_catalog_cache=drug_catalog_cache,
+                        drug_prepass_cache=drug_prepass_cache, refresh=prepass_refresh)
+                except Exception:
+                    pass  # degrade to the per-trial read (still correct, just slower)
 
     indexes: dict[str, dict] = {}
     if use_vocab_index:

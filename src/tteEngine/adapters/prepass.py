@@ -29,6 +29,19 @@ from tteEngine.adapters.live_loader import EICU_ROOT, MIMIC_ROOT, _CHUNK, _read_
 from tteEngine.contracts.events import EventType
 
 PREPASS_CACHE = Path.home() / ".cache" / "tteEngine" / "prepass"
+#: #171: the drug pre-pass parquet is the big corpus-union artifact — cache it on
+#: /ewsc (84T free), NOT /home (~92% full), per the disk directive. Overridable via
+#: $TTE_DRUG_PREPASS_CACHE. Content-keyed names (dataset + code hash) make it reused,
+#: not rebuilt, and stale-safe when the corpus arm set changes.
+DRUG_PREPASS_CACHE = Path(
+    __import__("os").environ.get("TTE_DRUG_PREPASS_CACHE", "/ewsc/jpickard/tte_live/cache"))
+
+
+def _code_hash(codes) -> str:
+    """Short stable content key for a code set (order-independent)."""
+    import hashlib
+    h = hashlib.sha1("\n".join(sorted(str(c) for c in codes)).encode()).hexdigest()
+    return h[:12]
 
 
 def corpus_lab_concepts(specs, *, event_types=(EventType.LAB, EventType.MEASUREMENT)) -> set[str]:
@@ -87,11 +100,35 @@ def _cached(cache_dir: Path, name: str, refresh: bool, build):
     return df
 
 
-def build_mimic_prepass(*, lab_itemids=(), chart_itemids=(), root: str = MIMIC_ROOT,
-                        cache_dir: str | Path = PREPASS_CACHE, refresh: bool = False,
+def corpus_drug_codes(specs, dataset: str, *, root: str | None = None,
+                      cache_dir: str | Path | None = None, catalog=None) -> set[str]:
+    """The UNION of (normalized) drug codes every trial's arms resolve to in `dataset`
+    — gsn/ndc for MIMIC, drughiclseqno for eICU (#131). This is the corpus-wide code
+    set the drug PRE-PASS pre-filters prescriptions/medication to, ONCE. The catalog
+    is built once + reused across specs (no per-spec re-read)."""
+    from tteEngine.matching import build_drug_catalog, build_drug_matcher
+    cat = catalog if catalog is not None else build_drug_catalog(dataset, root=root, cache_dir=cache_dir)
+    out: set[str] = set()
+    for spec in specs:
+        matcher = build_drug_matcher(spec, dataset, catalog=cat)
+        for cs in matcher.values():
+            out |= set(cs.codes.keys())          # DrugCodeSet.codes is keyed by _norm_code
+    return out
+
+
+def build_mimic_prepass(*, lab_itemids=(), chart_itemids=(), drug_codes=(),
+                        root: str = MIMIC_ROOT,
+                        cache_dir: str | Path = PREPASS_CACHE,
+                        drug_cache_dir: str | Path = DRUG_PREPASS_CACHE, refresh: bool = False,
                         chunksize: int = _CHUNK) -> Prepass:
-    """Scan MIMIC labevents/chartevents ONCE, filtered to the corpus-union itemids,
-    `label`-joined + cached. Returns a Prepass keyed by hadm_id."""
+    """Scan MIMIC labevents/chartevents/prescriptions ONCE, filtered to the
+    corpus-union itemids/drug-codes, `label`-joined + cached. Returns a Prepass keyed
+    by hadm_id.
+
+    `drug_codes` (#171): the corpus-union of gsn/ndc the arms match — scan the
+    ~579MB prescriptions ONCE here instead of per-trial in load_mimic. PURE caching:
+    each trial still slices its cohort + the adapter still code-matches to that trial's
+    arms, so cohort/arm assignment is byte-identical to the per-trial read."""
     hosp, icu = f"{root}/hosp", f"{root}/icu"
     cache_dir = Path(cache_dir)
     pp = Prepass(dataset="MIMIC-IV", id_col="hadm_id")
@@ -121,14 +158,34 @@ def build_mimic_prepass(*, lab_itemids=(), chart_itemids=(), root: str = MIMIC_R
             df["label"] = df["itemid"].astype(str).map(id2label)
             return df
         pp.tables["chartevents"] = _cached(cache_dir, "mimic_chartevents", refresh, _chart)
+
+    if drug_codes:  # #171: scan the ~579MB prescriptions ONCE, corpus-union codes only
+        from tteEngine.matching import _norm_code
+        codes = set(drug_codes)
+        pcols = ["hadm_id", "drug", "starttime", "dose_val_rx", "gsn", "ndc"]
+
+        def _rx():
+            return _read_filtered(
+                f"{hosp}/prescriptions.csv.gz", usecols=pcols,
+                keep=lambda c: c["gsn"].map(_norm_code).isin(codes)
+                | c["ndc"].map(_norm_code).isin(codes), chunksize=chunksize)
+        # content-keyed on /ewsc: reused across runs with the same arm code-union
+        pp.tables["prescriptions"] = _cached(
+            Path(drug_cache_dir), f"mimic_prescriptions_{_code_hash(codes)}", refresh, _rx)
     return pp
 
 
-def build_eicu_prepass(*, labnames=(), vital_cols=(), root: str = EICU_ROOT,
-                       cache_dir: str | Path = PREPASS_CACHE, refresh: bool = False,
+def build_eicu_prepass(*, labnames=(), vital_cols=(), drug_codes=(), root: str = EICU_ROOT,
+                       cache_dir: str | Path = PREPASS_CACHE,
+                       drug_cache_dir: str | Path = DRUG_PREPASS_CACHE, refresh: bool = False,
                        chunksize: int = _CHUNK) -> Prepass:
-    """Scan eICU lab / vitalPeriodic ONCE, filtered to the corpus-union labnames /
-    vital columns, cached. Returns a Prepass keyed by patientunitstayid."""
+    """Scan eICU lab / vitalPeriodic / medication ONCE, filtered to the corpus-union
+    labnames / vital columns / drug codes, cached. Returns a Prepass keyed by
+    patientunitstayid.
+
+    `drug_codes` (#171): corpus-union of drughiclseqno the arms match — scan medication
+    ONCE rather than per-trial. PURE caching (per-trial slice + adapter code-match
+    unchanged)."""
     cache_dir = Path(cache_dir)
     pp = Prepass(dataset="eICU-CRD", id_col="patientunitstayid")
 
@@ -150,8 +207,20 @@ def build_eicu_prepass(*, labnames=(), vital_cols=(), root: str = EICU_ROOT,
                                   usecols=["patientunitstayid", "observationoffset", *cols],
                                   keep=lambda c: pd.Series(True, index=c.index), chunksize=chunksize)
         pp.tables["vitalperiodic"] = _cached(cache_dir, "eicu_vitalperiodic", refresh, _vit)
+
+    if drug_codes:  # #171: scan eICU medication ONCE, corpus-union drughiclseqno only
+        from tteEngine.matching import _norm_code
+        codes = set(drug_codes)
+        mcols = ["patientunitstayid", "drugstartoffset", "drugname", "dosage", "drughiclseqno"]
+
+        def _med():
+            return _read_filtered(
+                f"{root}/medication.csv.gz", usecols=mcols,
+                keep=lambda c: c["drughiclseqno"].map(_norm_code).isin(codes), chunksize=chunksize)
+        pp.tables["medication"] = _cached(
+            Path(drug_cache_dir), f"eicu_medication_{_code_hash(codes)}", refresh, _med)
     return pp
 
 
-__all__ = ["Prepass", "corpus_lab_concepts", "prepass_itemids",
-           "build_mimic_prepass", "build_eicu_prepass", "PREPASS_CACHE"]
+__all__ = ["Prepass", "corpus_lab_concepts", "prepass_itemids", "corpus_drug_codes",
+           "build_mimic_prepass", "build_eicu_prepass", "PREPASS_CACHE", "DRUG_PREPASS_CACHE"]
