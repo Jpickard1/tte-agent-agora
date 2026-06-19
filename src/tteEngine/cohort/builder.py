@@ -34,20 +34,29 @@ def _identity(name):
 
 
 def _index_times(events: "pd.DataFrame", spec: TargetTrialSpec) -> dict[int, "pd.Timestamp"]:
-    """Landmark t0 per trajectory: first event matching the anchor, else the
-    trajectory's earliest event. anchor 'icu_admission' maps to LOCATION events.
-    """
+    """Landmark t0 per trajectory: first event matching the anchor; else the earliest
+    NON-OUTCOME event. anchor 'icu_admission' maps to LOCATION events.
+
+    The non-outcome fallback (#163/anchor) is critical: when the anchor event is not
+    emitted (e.g. no admission/LOCATION row), anchoring on the earliest event can land
+    t0 ON THE OUTCOME (death) -> the immortal-time guard then sees an outcome at/before
+    the landmark and excludes EVERY trajectory (probe's 6/8 empty cohorts; also why
+    control patients with no med events collapsed). Trajectories with ONLY outcome
+    events have no anchorable t0 and are OMITTED here (build_cohort drops them with an
+    explicit 'unanchorable' reason, never a silent immortal-exclusion)."""
     anchor = spec.time_zero.anchor
+    outcome_types = {o.event_type.value for o in spec.outcomes}
     t0: dict[int, "pd.Timestamp"] = {}
     for tid, g in events.groupby("TRAJECTORY_ID", sort=True):
         g = g.sort_values("TIMESTAMP")
-        hit = g
         if anchor == "icu_admission":
-            loc = g[g["EVENT_TYPE"] == EventType.LOCATION.value]
-            hit = loc if len(loc) else g
+            hit = g[g["EVENT_TYPE"] == EventType.LOCATION.value]
         else:
-            named = g[g["EVENT_NAME"] == anchor]
-            hit = named if len(named) else g
+            hit = g[g["EVENT_NAME"] == anchor]
+        if len(hit) == 0:  # anchor absent -> earliest NON-OUTCOME event (never anchor on death)
+            hit = g[~g["EVENT_TYPE"].isin(outcome_types)]
+        if len(hit) == 0:  # only outcome events -> unanchorable (handled in build_cohort)
+            continue
         t0[int(tid)] = hit["TIMESTAMP"].iloc[0]
     return t0
 
@@ -315,12 +324,15 @@ def build_cohort(
     index_times: dict[int, object] = {}
     by_id = {int(tid): g for tid, g in events.groupby("TRAJECTORY_ID", sort=True)}
 
-    n_eligible = n_excluded_immortal = n_unassigned = n_low_conf = 0
+    n_eligible = n_excluded_immortal = n_unassigned = n_low_conf = n_unanchorable = 0
     provenance: list[dict] = []
     arm_method_counts: dict[str, dict[str, int]] = {}
     treatment_names = {a.name for a in spec.arms if not a.is_control}
     for tid in sorted(by_id):
-        t0 = t0_all[tid]
+        t0 = t0_all.get(tid)
+        if t0 is None:  # no anchorable (non-outcome) event -> drop explicitly, not as immortal
+            n_unanchorable += 1
+            continue
         traj = by_id[tid]
         if not _is_eligible(traj, applied, t0, _resolve):
             continue
@@ -355,6 +367,7 @@ def build_cohort(
         landmark_hours=landmark, arm_sizes={a.name: len(a.trajectory_ids) for a in arm_objs},
         leakage_warnings=_leakage_warnings(spec),
         n_skipped_unmeasurable=len(skipped_labels), skipped_eligibility=skipped_labels,
+        n_unanchorable=n_unanchorable,
     )
     return CohortResult(
         nct_id=spec.nct_id, dataset=dataset, arms=arm_objs, index_times=index_times,
