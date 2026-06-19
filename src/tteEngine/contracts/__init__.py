@@ -29,6 +29,7 @@ from .trial_spec import (
     TargetTrialSpec,
     TimeZeroRule,
 )
+from .results import Agreement, ComparisonResult, EffectMeasure, TTEResult
 
 __all__ = [
     "CANONICAL_COLUMNS",
@@ -47,4 +48,8 @@ __all__ = [
     "Comparator",
     "ArmAssignment",
     "CohortResult",
+    "TTEResult",
+    "ComparisonResult",
+    "EffectMeasure",
+    "Agreement",
 ]
