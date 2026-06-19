@@ -50,12 +50,6 @@ class CohortResult(BaseModel):
     feature_columns: list[str] = Field(default_factory=list)
     n_total: int = 0
     diagnostics: "CohortDiagnostics | None" = None
-    # --- #138 audit primitives (probe assembles these into contracts.audit.AssignmentAudit) ---
-    eligibility_decisions: list[dict] = Field(default_factory=list)   # per criterion: measurable/result/reason
-    assignment_provenance: list[dict] = Field(default_factory=list)   # bounded per-patient MatchProvenance sample
-    arm_method_counts: dict[str, dict[str, int]] = Field(default_factory=dict)  # arm -> {method -> count}
-    n_unassigned: int = 0          # eligible but matched no treatment/control arm
-    n_low_confidence: int = 0      # arm matches at a low-confidence (substring) tier
 
     def n_by_arm(self) -> dict[str, int]:
         return {a.name: len(a.trajectory_ids) for a in self.arms}
