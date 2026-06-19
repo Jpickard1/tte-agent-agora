@@ -9,6 +9,11 @@ trial's observed result — across as many trials as possible.
 This repo is built by a team of autonomous agents; humans monitor progress via
 GitHub issues + PRs. The Python package is `tteEngine`.
 
+📐 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** is the canonical reference:
+the end-to-end pipeline, the 5-column common-format contract, the integration
+seams, and the import-light layering. Run `python -m tteEngine.reproduce` to
+regenerate the full artifact deterministically.
+
 ## Pipeline
 
 ```
