@@ -12,6 +12,7 @@ from .reader import (
     reported_outcome_measures,
 )
 from .spec import study_to_spec
+from .intelligence import spec_to_plan
 
 __all__ = [
     "fetch_study",
@@ -19,4 +20,5 @@ __all__ = [
     "nct_id_of",
     "reported_outcome_measures",
     "study_to_spec",
+    "spec_to_plan",
 ]
