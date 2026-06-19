@@ -188,3 +188,13 @@ class Pipeline:
     def resume(self) -> ComparisonResult:
         """Re-run only the invalidated (missing) steps, in order."""
         return self.run()
+
+
+def make_cohort_provider(resolve=None):
+    """Return a Pipeline `cohort` provider that threads a vocab resolver into
+    build_cohort, so concept-level eligibility/arms match REAL raw-coded adapter
+    streams (ICD/RxNorm). `resolve` = vocab.classify (or None for identity, the
+    synthetic/concept-name default). Mirrors make_engine_provider."""
+    def provider(events, spec, dataset):
+        return build_cohort(events, spec, dataset=dataset, resolve=resolve)
+    return provider
