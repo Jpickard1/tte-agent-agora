@@ -189,8 +189,28 @@ def build_measurability_catalog(
     }
 
 
+def confounder_measurability(concept: str, event_type: EventType, dataset: str, *,
+                             frame=None, column: str | None = None) -> dict:
+    """Per-CONFOUNDER measurability verdict for the #105 adjustability ledger
+    (probe): is this confounder measurable / proxy / unmeasurable in `dataset`?
+
+    A stable public entry over the same engine as measurability_report, at single
+    (confounder, dataset) granularity — drop-in as an injectable measure_fn. When a
+    built analysis `frame` + `column` are supplied, also reports the missing
+    fraction (so the ledger can flag measurable-but-too-missing). Pure (frame
+    optional)."""
+    status, reason = _classify(concept, event_type, dataset,
+                               is_outcome=(event_type == EventType.OUTCOME))
+    out = {"confounder": concept, "event_type": event_type.value,
+           "dataset": dataset, "status": status, "reason": reason}
+    if frame is not None and column is not None and column in getattr(frame, "columns", []):
+        n = len(frame)
+        out["missing_fraction"] = round(float(frame[column].isna().sum()) / n, 4) if n else 0.0
+    return out
+
+
 __all__ = [
     "ElementMeasurability", "DatasetMeasurability", "measurability_report",
-    "build_measurability_catalog", "DATASET_DIRECT", "DATASET_PROXY",
-    "MEASURABLE", "PROXY", "UNMEASURABLE",
+    "build_measurability_catalog", "confounder_measurability",
+    "DATASET_DIRECT", "DATASET_PROXY", "MEASURABLE", "PROXY", "UNMEASURABLE",
 ]
