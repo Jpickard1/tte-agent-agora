@@ -78,12 +78,15 @@ def run_tte(
     horizon_days: float = 28.0,
     id_col: str = "TRAJECTORY_ID",
     reverse: bool = False,
+    restrict_col: str | None = None,
     nct_id: str = "",
     dataset: str = "",
 ) -> TTEResult:
     """Estimate the emulated treatment effect on an analysis-ready cohort frame
     and return a contracts.TTEResult. `frame` needs a 0/1 `treatment_col`, the
-    `covariates`, and the outcome column(s). Adjustment: iptw|psm|covariate|unadjusted."""
+    `covariates`, and the outcome column(s). Adjustment: iptw|psm|covariate|unadjusted.
+    `restrict_col`: analyse only rows where it == 1 (e.g. an adherence flag for a
+    per-protocol estimand)."""
     # lazy: importing tteEngine.analysis stays light; lifelines/statsmodels load
     # only here, when an analysis is actually run.
     from .engine import AnalysisConfig, OutcomeSpec, run_analysis
@@ -91,7 +94,7 @@ def run_tte(
     spec = OutcomeSpec(
         key=outcome_col, label=label or outcome_col, kind=outcome_kind,
         event_col=outcome_col, time_col=time_col, horizon_days=horizon_days,
-        reverse=reverse,
+        reverse=reverse, restrict_col=restrict_col,
     )
     cfg = AnalysisConfig(
         treatment_col=treatment_col, covariates=list(covariates), adjustment=adjustment,
