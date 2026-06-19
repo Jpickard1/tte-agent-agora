@@ -183,3 +183,72 @@ def test_theme_helpers_render_html():
     assert "tte" in theme.header_html("crumb") and "clinicaltrials" not in theme.header_html("x")
     assert "b-conc" in theme.badge_html("concordant") and "b-disc" in theme.badge_html("discordant")
     assert "ClinicalTrials.gov trial" in theme.pipeline_html()
+
+
+# ---- #104 sibling: confounder ledger / balance / summary ----
+
+_BALANCE = [{"variable": "age", "smd_before": 0.30, "smd_after": 0.04},
+            {"variable": "lactate", "smd_before": 0.55, "smd_after": 0.18}]
+
+
+def test_confounder_ledger_fallback_green_from_balance():
+    from tteEngine.ui import confounder_ledger
+    led = confounder_ledger({"balance": _BALANCE})
+    assert [r["status"] for r in led] == ["adjusted", "adjusted"]
+    assert all(r["color"] == "#3f8f86" for r in led)  # green
+
+
+def test_confounder_ledger_uses_probe_status_colors():
+    from tteEngine.ui import confounder_ledger
+    led = confounder_ledger(
+        {"balance": _BALANCE},
+        ledger=[{"name": "age", "status": "adjusted"},
+                {"name": "lactate", "status": "measurable_unused"},
+                {"name": "frailty", "status": "unmeasured"}])
+    by = {r["name"]: r for r in led}
+    assert by["age"]["color"] == "#3f8f86"          # green
+    assert by["lactate"]["color"] == "#b8823c"      # amber
+    assert by["frailty"]["color"] == "#c0392b"      # red
+    assert by["age"]["smd_after"] == 0.04           # joined from balance
+
+
+def test_confounder_summary_label_and_counts():
+    from tteEngine.ui import confounder_summary
+    s = confounder_summary(
+        {"balance": _BALANCE},
+        ledger=[{"name": "age", "status": "adjusted"},
+                {"name": "lactate", "status": "adjusted"},
+                {"name": "frailty", "status": "unmeasured"}])
+    assert s["label"] == "adjusted 2/3" and s["n_unmeasured"] == 1
+    assert s["n_balanced_after"] == 1  # only age <=0.1 after
+
+
+def test_confounder_block_none_when_empty():
+    from tteEngine.ui import confounder_block
+    assert confounder_block({"p_value": 0.04}) is None
+    assert confounder_block({"balance": _BALANCE}) is not None
+
+
+def test_build_cards_attaches_confounders():
+    cr = ComparisonResult(
+        nct_id="NCT1", dataset="MIMIC-IV",
+        emulated=TTEResult(nct_id="NCT1", dataset="MIMIC-IV", method="iptw",
+                           measure=EffectMeasure.OR, estimate=0.6, n_treated=10, n_control=10,
+                           extra={"balance": _BALANCE}),
+        observed_estimate=0.9, observed_measure=EffectMeasure.RR, agreement=Agreement.CONCORDANT)
+    card = build_cards([cr])[0]
+    assert card.confounders is not None and card.confounders["summary"]["label"] == "adjusted 2/2"
+
+
+def test_love_and_ps_chart_builders():
+    pytest.importorskip("altair")
+    pytest.importorskip("pandas")
+    pytest.importorskip("streamlit")
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    import results_app as app
+    assert app._love_plot(_BALANCE) is not None
+    assert app._love_plot([]) is None
+    assert app._ps_overlap_chart({"bins": [{"x": 0.1, "treated": 0.2, "control": 0.5}]}) is not None
+    assert app._ps_overlap_chart(None) is None and app._ps_overlap_chart({"foo": 1}) is None
