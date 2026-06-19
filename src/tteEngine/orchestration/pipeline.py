@@ -63,6 +63,11 @@ def _default_plan(spec: TargetTrialSpec, dataset: str) -> ExtractionPlan:
                                        event_type=c.event_type, role="eligibility"))
     for o in spec.outcomes:
         concepts.append(ConceptRequest(concept=o.concept or o.name, event_type=o.event_type, role="outcome"))
+    # the EXPOSURE: adapters must extract each arm's intervention or there is no
+    # treated arm to assign (caught by worker1's adapter->vignette smoke).
+    for arm in spec.arms:
+        for c in arm.intervention_concepts:
+            concepts.append(ConceptRequest(concept=c, event_type=EventType.MEDICATION, role="exposure"))
     return ExtractionPlan(nct_id=spec.nct_id, dataset=dataset, concepts=concepts)
 
 
