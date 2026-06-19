@@ -36,6 +36,18 @@ from .variants import (
     run_estimand_variants,
     run_subgroups,
 )
+from .meta import (
+    ConcordanceSummary,
+    MetaReport,
+    MetaResult,
+    concordance_summary,
+    dump_comparisons_jsonl,
+    load_comparisons_jsonl,
+    meta_analyze,
+    pooled_effect,
+    random_effects,
+    wilson_ci,
+)
 
 __all__ = [
     "run_tte",
@@ -62,4 +74,14 @@ __all__ = [
     "run_subgroups",
     "SubgroupReport",
     "SubgroupEstimate",
+    "meta_analyze",
+    "MetaReport",
+    "MetaResult",
+    "ConcordanceSummary",
+    "concordance_summary",
+    "pooled_effect",
+    "random_effects",
+    "wilson_ci",
+    "load_comparisons_jsonl",
+    "dump_comparisons_jsonl",
 ]
