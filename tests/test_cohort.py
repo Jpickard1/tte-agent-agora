@@ -197,3 +197,18 @@ def test_skip_unmeasurable_can_be_disabled():
                              comparator=Comparator.GE, value=18.0)]})
     c = build_cohort(EVENTS, spec, dataset="TEST", skip_unmeasurable=False)
     assert c.n_total == 0  # age criterion now fails everyone (no demog events)
+
+
+def test_arm_assignment_excludes_placebo():
+    # a 'placebo' med must NOT count as the treatment, even if it substring-matches
+    spec = SPEC.model_copy(update={"arms": [
+        Arm(name="vitc", intervention_concepts=["Drug: Vitamin C"]),
+        Arm(name="control", is_control=True)]})
+    ev = _frame([
+        (1, _hr(-1), "diagn", "sepsis", "1"), (1, _hr(0), "lab", "lactate", "4"),
+        (1, _hr(2), "medic", "Vitamin C", "1"),
+        (2, _hr(-1), "diagn", "sepsis", "1"), (2, _hr(0), "lab", "lactate", "4"),
+        (2, _hr(2), "medic", "Vitamin C Placebo", "1")])  # placebo -> control, not treated
+    c = build_cohort(ev, spec, dataset="TEST")
+    by = {a.name: a.trajectory_ids for a in c.arms}
+    assert by.get("vitc") == [1] and by.get("control") == [2]

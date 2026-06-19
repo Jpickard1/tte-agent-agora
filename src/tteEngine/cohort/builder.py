@@ -134,6 +134,8 @@ def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve)
 
         def _norm_match(name, _cn=concepts_norm):
             n = _norm_drug(name)
+            if "placebo" in n:  # a placebo administration is never a treatment match
+                return False
             return any(cn in n or n in cn for cn in _cn)
 
         match = names.isin(arm.intervention_concepts) | names.map(_norm_match)
