@@ -220,3 +220,6 @@ __marimo__/
 # reproducibility regen output + ctgov fetch cache (frozen snapshot is committed)
 outputs/
 data/_ctgov_cache/
+
+# live-run driver (#102) output artifacts
+live_outputs/
