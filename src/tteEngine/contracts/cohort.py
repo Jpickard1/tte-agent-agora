@@ -33,6 +33,8 @@ class CohortDiagnostics(BaseModel):
     landmark_hours: float = 0.0
     arm_sizes: dict[str, int] = Field(default_factory=dict)
     leakage_warnings: list[str] = Field(default_factory=list)
+    n_skipped_unmeasurable: int = 0
+    skipped_eligibility: list[str] = Field(default_factory=list)  # criteria not measurable in this dataset
 
 
 class CohortResult(BaseModel):

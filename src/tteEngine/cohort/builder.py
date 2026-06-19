@@ -98,8 +98,11 @@ def _criterion_satisfied(traj_events: "pd.DataFrame", crit: EligibilityCriterion
     return False
 
 
-def _is_eligible(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve) -> bool:
-    for crit in spec.eligibility:
+def _is_eligible(traj_events: "pd.DataFrame", criteria, t0, resolve) -> bool:
+    """Apply only the (measurable) `criteria` — unmeasurable ones are dropped
+    upstream and reported, so an un-emitted criterion (e.g. demographics) doesn't
+    silently fail the whole cohort."""
+    for crit in criteria:
         satisfied = _criterion_satisfied(traj_events, crit, t0, resolve)
         if crit.include and not satisfied:
             return False
@@ -108,17 +111,32 @@ def _is_eligible(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve
     return True
 
 
+def _norm_drug(name) -> str:
+    """Normalize an intervention/med name for matching: drop the ctgov type prefix
+    ('Drug:'/'Device:'/'Biological:'/...) and lowercase. 'Drug: Thiamine' -> 'thiamine'."""
+    s = str(name)
+    if ":" in s:
+        s = s.split(":", 1)[1]
+    return s.strip().lower()
+
+
 def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve) -> str:
     """First treatment arm whose intervention is administered within the grace
-    window wins; otherwise control. Returns the arm name.
-    """
+    window wins; otherwise control. Matches exact / resolved name OR a normalized
+    substring ('Drug: Thiamine' vs MIMIC 'thiamine'/'thiamine 100mg')."""
     grace = spec.time_zero.grace_window_hours
     treatment_arms = [a for a in spec.arms if not a.is_control]
     control = next((a for a in spec.arms if a.is_control), None)
     is_med = traj_events["EVENT_TYPE"] == EventType.MEDICATION.value
     names = traj_events["EVENT_NAME"]
     for arm in treatment_arms:
-        match = names.isin(arm.intervention_concepts)
+        concepts_norm = [c for c in (_norm_drug(x) for x in arm.intervention_concepts) if len(c) >= 3]
+
+        def _norm_match(name, _cn=concepts_norm):
+            n = _norm_drug(name)
+            return any(cn in n or n in cn for cn in _cn)
+
+        match = names.isin(arm.intervention_concepts) | names.map(_norm_match)
         if resolve is not _identity:  # skip the per-row map under the identity default (#36 scale)
             match = match | names.map(resolve).isin(arm.intervention_concepts)
         meds = traj_events[is_med & match]
@@ -171,6 +189,8 @@ def build_cohort(
     resolve=None,
     enforce_landmark: bool = True,
     landmark_hours: float | None = None,
+    skip_unmeasurable: bool = True,
+    measurable_fn=None,
 ) -> CohortResult:
     """Build the emulated-trial cohort with explicit, immortal-time-safe time-zero.
 
@@ -189,6 +209,19 @@ def build_cohort(
     _resolve = resolve or _identity
     landmark = landmark_hours if landmark_hours is not None else spec.time_zero.grace_window_hours
 
+    # measurability-aware eligibility: drop criteria this dataset can't measure
+    # (e.g. demographics not emitted) rather than failing every trajectory.
+    present_types = set(events["EVENT_TYPE"].unique())
+
+    def _measurable(crit) -> bool:
+        if measurable_fn is not None:
+            return bool(measurable_fn(crit))
+        return crit.event_type.value in present_types
+
+    applied = [c for c in spec.eligibility if _measurable(c)] if skip_unmeasurable else list(spec.eligibility)
+    skipped = [c for c in spec.eligibility if c not in applied]
+    skipped_labels = [f"{c.concept or c.event_type.value} ({c.event_type.value})" for c in skipped]
+
     t0_all = _index_times(events, spec)
     arms: dict[str, list[int]] = {}
     index_times: dict[int, object] = {}
@@ -198,7 +231,7 @@ def build_cohort(
     for tid in sorted(by_id):
         t0 = t0_all[tid]
         traj = by_id[tid]
-        if not _is_eligible(traj, spec, t0, _resolve):
+        if not _is_eligible(traj, applied, t0, _resolve):
             continue
         n_eligible += 1
         if enforce_landmark and _outcome_before_landmark(traj, spec, t0, landmark, _resolve):
@@ -220,6 +253,7 @@ def build_cohort(
         anchor=spec.time_zero.anchor, grace_window_hours=spec.time_zero.grace_window_hours,
         landmark_hours=landmark, arm_sizes={a.name: len(a.trajectory_ids) for a in arm_objs},
         leakage_warnings=_leakage_warnings(spec),
+        n_skipped_unmeasurable=len(skipped), skipped_eligibility=skipped_labels,
     )
     return CohortResult(
         nct_id=spec.nct_id, dataset=dataset, arms=arm_objs, index_times=index_times,
