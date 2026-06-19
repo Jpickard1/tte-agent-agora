@@ -153,7 +153,7 @@ def _write_analysis(comparisons, specs, out, *, datasets, context=True, figures=
 
 
 def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=None, specs=None,
-             out_dir="live_outputs", datasets=DATASETS, max_studies=2000,
+             out_dir="live_outputs", datasets=DATASETS, max_studies=2000, max_trials=None,
              adjustment="iptw", covariates=None, threshold=0.5, emulable_only=True,
              lean=True, http_get=None, context=True, figures=True) -> dict:
     """Run the live corpus end-to-end and write the gallery artifacts to out_dir:
@@ -173,6 +173,10 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
         catalog = {"n_emulable": len(jobs), "n_sepsis_emulable": None,
                    "max_studies": max_studies, "datasets": list(datasets),
                    "note": "jobs injected"}
+
+    if max_trials is not None and len(jobs) > max_trials:
+        catalog["n_capped_to"] = max_trials      # explicit cap (sepsis-first), never silent
+        jobs, specs = jobs[:max_trials], specs[:max_trials]
 
     engine_fn = engine_fn or make_engine_provider(covariates or [], adjustment=adjustment)
     if plan_fn is None and lean:
@@ -240,6 +244,8 @@ def main(argv=None):
     ap.add_argument("--out", default="live_outputs")
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
     ap.add_argument("--max-studies", type=int, default=2000)
+    ap.add_argument("--max-trials", type=int, default=None,
+                    help="cap the number of (sepsis-first) trials run (e.g. for a quick real slice)")
     ap.add_argument("--adjustment", default="iptw", help="iptw | psm | cox | crude")
     ap.add_argument("--synthetic", action="store_true",
                     help="scaffold: synthetic confounded stream (no real data) through the real engine")
@@ -252,8 +258,8 @@ def main(argv=None):
     extract_fn = _synthetic_extract_fn() if a.synthetic else _real_extract_fn(a.datasets)
     summary = run_live(
         extract_fn=extract_fn, out_dir=a.out, datasets=tuple(a.datasets),
-        max_studies=a.max_studies, adjustment=a.adjustment, lean=not a.full,
-        context=not a.no_context, figures=not a.no_figures)
+        max_studies=a.max_studies, max_trials=a.max_trials, adjustment=a.adjustment,
+        lean=not a.full, context=not a.no_context, figures=not a.no_figures)
     print(json.dumps(summary, indent=2, default=str))
 
 
