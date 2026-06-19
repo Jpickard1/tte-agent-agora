@@ -2,23 +2,30 @@
 materialize deterministic long->wide feature views.
 
 `validate_canonical` is the gate every adapter (#6/#7/#8) output must pass.
-`materialize_wide` is probe's must-have #3: a DETERMINISTIC long->wide API so
-estimands are reproducible (the wide cohort/feature table is a derived VIEW over
-the canonical long stream, never a separate source of truth). The full
-implementation lands with the cohort builder (#9); the signature + contract are
-fixed here so all lanes code to it.
+`materialize_wide` (in materialize.py) is the deterministic long->wide API the
+cohort builder (#9) and adapter QA build on — the wide feature table is a
+reproducible VIEW over the canonical long stream, never a separate source.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from tteEngine.contracts.events import CANONICAL_COLUMNS, CANONICAL_DTYPES
+
+from .materialize import Aggregation, FeatureSpec, materialize_wide
 
 if TYPE_CHECKING:  # pandas is an optional (analysis) dependency
     import pandas as pd
 
-__all__ = ["validate_canonical", "materialize_wide", "CANONICAL_COLUMNS", "CANONICAL_DTYPES"]
+__all__ = [
+    "validate_canonical",
+    "materialize_wide",
+    "FeatureSpec",
+    "Aggregation",
+    "CANONICAL_COLUMNS",
+    "CANONICAL_DTYPES",
+]
 
 
 def validate_canonical(df: "pd.DataFrame", *, strict_dtypes: bool = True) -> "pd.DataFrame":
@@ -38,22 +45,8 @@ def validate_canonical(df: "pd.DataFrame", *, strict_dtypes: bool = True) -> "pd
             if want.startswith("datetime64"):
                 if not got.startswith("datetime64"):
                     raise ValueError(f"{col}: expected tz-aware datetime, got {got}")
+                if getattr(df[col].dtype, "tz", None) is None:
+                    raise ValueError(f"{col}: TIMESTAMP must be tz-aware (UTC), got tz-naive")
             elif want == "int64" and got not in ("int64", "Int64"):
                 raise ValueError(f"{col}: expected int64, got {got}")
     return df
-
-
-def materialize_wide(
-    df: "pd.DataFrame",
-    feature_spec: dict[str, Any],
-    *,
-    index_times: dict[int, Any] | None = None,
-) -> "pd.DataFrame":
-    """Deterministic long->wide view: one row per TRAJECTORY_ID, columns per
-    feature in `feature_spec`. Contract only — implemented in the cohort builder
-    (#9). Determinism (stable column order + aggregation) is required so
-    estimands reproduce.
-    """
-    raise NotImplementedError(
-        "materialize_wide is the #4<->#9 contract; implemented with the cohort builder (#9)."
-    )
