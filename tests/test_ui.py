@@ -185,70 +185,84 @@ def test_theme_helpers_render_html():
     assert "ClinicalTrials.gov trial" in theme.pipeline_html()
 
 
-# ---- #104 sibling: confounder ledger / balance / summary ----
+# ---- #104 sibling: confounder ledger / balance / PS (probe's #105 shapes) ----
 
 _BALANCE = [{"variable": "age", "smd_before": 0.30, "smd_after": 0.04},
             {"variable": "lactate", "smd_before": 0.55, "smd_after": 0.18}]
 
-
-def test_confounder_ledger_fallback_green_from_balance():
-    from tteEngine.ui import confounder_ledger
-    led = confounder_ledger({"balance": _BALANCE})
-    assert [r["status"] for r in led] == ["adjusted", "adjusted"]
-    assert all(r["color"] == "#3f8f86" for r in led)  # green
-
-
-def test_confounder_ledger_uses_probe_status_colors():
-    from tteEngine.ui import confounder_ledger
-    led = confounder_ledger(
-        {"balance": _BALANCE},
-        ledger=[{"name": "age", "status": "adjusted"},
-                {"name": "lactate", "status": "measurable_unused"},
-                {"name": "frailty", "status": "unmeasured"}])
-    by = {r["name"]: r for r in led}
-    assert by["age"]["color"] == "#3f8f86"          # green
-    assert by["lactate"]["color"] == "#b8823c"      # amber
-    assert by["frailty"]["color"] == "#c0392b"      # red
-    assert by["age"]["smd_after"] == 0.04           # joined from balance
+# probe's ConfounderLedger (#105), duck-typed as a dict
+_LEDGER = {
+    "nct_id": "NCT1", "dataset": "MIMIC-IV", "summary_line": "adjusted 2/3 confounders; 1 not-adjustable",
+    "n_considered": 3, "n_adjusted": 2, "n_measurable_not_used": 0, "n_not_adjustable": 1,
+    "e_value_point": 1.4, "residual_confounding_note": "frailty unmeasured in ICU EHR",
+    "ps_overlap": {"bin_centers": [0.1, 0.5, 0.9], "treated_density": [0.1, 0.5, 0.4],
+                   "control_density": [0.5, 0.4, 0.1], "overlap_coef": 0.62, "poor": False},
+    "considered": [
+        {"confounder": "age", "status": "measurable", "classification": "adjusted",
+         "in_model": True, "smd_before": 0.30, "smd_after": 0.04, "reason": ""},
+        {"confounder": "lactate", "status": "measurable", "classification": "adjusted",
+         "in_model": True, "smd_before": 0.55, "smd_after": 0.18, "reason": ""},
+        {"confounder": "frailty", "status": "unmeasurable", "classification": "not_adjustable",
+         "in_model": False, "smd_before": None, "smd_after": None, "reason": "no EHR proxy"}],
+}
 
 
-def test_confounder_summary_label_and_counts():
+def test_ledger_rows_classification_colors():
+    from tteEngine.ui import ledger_rows
+    rows = {r["name"]: r for r in ledger_rows(_LEDGER)}
+    assert rows["age"]["color"] == "#3f8f86"        # adjusted -> green
+    assert rows["frailty"]["color"] == "#c0392b"    # not_adjustable -> red
+    assert rows["frailty"]["classification"] == "not_adjustable"
+
+
+def test_confounder_summary_from_ledger():
     from tteEngine.ui import confounder_summary
-    s = confounder_summary(
-        {"balance": _BALANCE},
-        ledger=[{"name": "age", "status": "adjusted"},
-                {"name": "lactate", "status": "adjusted"},
-                {"name": "frailty", "status": "unmeasured"}])
-    assert s["label"] == "adjusted 2/3" and s["n_unmeasured"] == 1
-    assert s["n_balanced_after"] == 1  # only age <=0.1 after
+    s = confounder_summary({"balance": _BALANCE}, ledger=_LEDGER)
+    assert s["label"] == "adjusted 2/3 confounders; 1 not-adjustable"
+    assert s["n_not_adjustable"] == 1 and s["e_value"] == 1.4
+    assert "frailty" in s["residual_note"]
 
 
-def test_confounder_block_none_when_empty():
+def test_confounder_summary_fallback_balance_only():
+    from tteEngine.ui import confounder_summary
+    s = confounder_summary({"balance": _BALANCE})  # no ledger -> green-only
+    assert s["label"] == "adjusted 2/2" and s["n_not_adjustable"] == 0
+
+
+def test_confounder_block_prefers_ledger_ps_then_extra():
     from tteEngine.ui import confounder_block
+    blk = confounder_block({"balance": _BALANCE}, ledger=_LEDGER)
+    assert blk["ps_overlap"]["overlap_coef"] == 0.62
+    assert len(blk["ledger"]) == 3
     assert confounder_block({"p_value": 0.04}) is None
-    assert confounder_block({"balance": _BALANCE}) is not None
 
 
-def test_build_cards_attaches_confounders():
+def test_build_dashboard_joins_ledger_onto_cards():
+    pytest.importorskip("numpy")
+    pytest.importorskip("statsmodels")
+    from tteEngine.ui import build_dashboard
     cr = ComparisonResult(
         nct_id="NCT1", dataset="MIMIC-IV",
         emulated=TTEResult(nct_id="NCT1", dataset="MIMIC-IV", method="iptw",
                            measure=EffectMeasure.OR, estimate=0.6, n_treated=10, n_control=10,
                            extra={"balance": _BALANCE}),
         observed_estimate=0.9, observed_measure=EffectMeasure.RR, agreement=Agreement.CONCORDANT)
-    card = build_cards([cr])[0]
-    assert card.confounders is not None and card.confounders["summary"]["label"] == "adjusted 2/2"
+    m = build_dashboard([cr], ledger_records=[_LEDGER])
+    card = m.cards[0]
+    assert card.confounders["summary"]["n_not_adjustable"] == 1
+    assert any(r["classification"] == "not_adjustable" for r in card.confounders["ledger"])
+    # all-trials table carries the summary line
+    from tteEngine.ui import trial_table
+    assert "not-adjustable" in trial_table(m)[0]["adjusted"]
 
 
-def test_love_and_ps_chart_builders():
+def test_chart_builders_love_and_ps():
     pytest.importorskip("altair")
-    pytest.importorskip("pandas")
     pytest.importorskip("streamlit")
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
     import results_app as app
-    assert app._love_plot(_BALANCE) is not None
-    assert app._love_plot([]) is None
-    assert app._ps_overlap_chart({"bins": [{"x": 0.1, "treated": 0.2, "control": 0.5}]}) is not None
-    assert app._ps_overlap_chart(None) is None and app._ps_overlap_chart({"foo": 1}) is None
+    assert app._love_plot(_BALANCE) is not None and app._love_plot([]) is None
+    assert app._ps_overlap_chart(_LEDGER["ps_overlap"]) is not None
+    assert app._ps_overlap_chart(None) is None and app._ps_overlap_chart({"x": 1}) is None

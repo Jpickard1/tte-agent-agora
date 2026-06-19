@@ -103,19 +103,18 @@ def _love_plot(balance):
 
 
 def _ps_overlap_chart(ps):
-    """Propensity-score overlap (density bins per arm). Defensive — renders only
-    when probe's expected shape {bins:[{x, treated, control}]} is present."""
+    """Propensity-score overlap from probe's #105 shape
+    {bin_centers, treated_density, control_density, overlap_coef, poor} | None."""
     if not isinstance(ps, dict):
         return None
-    bins = ps.get("bins")
-    if not bins:
+    xs = ps.get("bin_centers")
+    td, cd = ps.get("treated_density"), ps.get("control_density")
+    if not xs or not td or not cd:
         return None
-    df = pd.DataFrame(bins)
-    if not {"x", "treated", "control"} <= set(df.columns):
-        return None
-    long = df.melt("x", ["treated", "control"], var_name="arm", value_name="density")
-    return alt.Chart(long).mark_area(opacity=0.5, interpolate="monotone").encode(
-        x=alt.X("x:Q", title="propensity score"), y=alt.Y("density:Q", stack=None),
+    rows = ([{"ps": x, "arm": "treated", "density": d} for x, d in zip(xs, td)] +
+            [{"ps": x, "arm": "control", "density": d} for x, d in zip(xs, cd)])
+    return alt.Chart(pd.DataFrame(rows)).mark_area(opacity=0.5, interpolate="monotone").encode(
+        x=alt.X("ps:Q", title="propensity score"), y=alt.Y("density:Q", stack=None),
         color=alt.Color("arm:N", scale=alt.Scale(domain=["treated", "control"],
                         range=["#6b5ea6", "#b8823c"]))).properties(height=220)
 
@@ -123,21 +122,30 @@ def _ps_overlap_chart(ps):
 def _render_confounders(conf):
     """Confounder ledger (green/amber/red) + love plot + PS overlap for one card."""
     summ = conf.get("summary") or {}
-    _eyebrow(f"CONFOUNDERS · {summ.get('label', '—')}"
-             + (f" · {summ.get('n_unmeasured')} not adjustable" if summ.get("n_unmeasured") else ""))
+    _eyebrow("CONFOUNDERS · " + (summ.get("label") or "—"))
+    if summ.get("residual_note"):
+        ev = f" (E-value {summ['e_value']})" if summ.get("e_value") else ""
+        st.markdown(f"<span style='color:#c0392b;font-size:13px'>⚠ residual confounding{ev}: "
+                    f"{summ['residual_note']}</span>", unsafe_allow_html=True)
     led = conf.get("ledger") or []
     if led:
         chips = "".join(
             f"<span class='badge' style='color:{r['color']};background:{r['color']}14;"
-            f"border-color:{r['color']}55'>{r['name']} · {r['status'].replace('_', ' ')}</span> "
+            f"border-color:{r['color']}55'>{r['name']} · {(r['classification'] or '').replace('_', ' ')}</span> "
             for r in led)
         st.markdown(chips, unsafe_allow_html=True)
     lp = _love_plot(conf.get("balance"))
     if lp is not None:
         st.altair_chart(lp, use_container_width=True)
-    pso = _ps_overlap_chart(conf.get("ps_overlap"))
+    ps = conf.get("ps_overlap")
+    pso = _ps_overlap_chart(ps)
     if pso is not None:
         st.altair_chart(pso, use_container_width=True)
+        if isinstance(ps, dict) and ps.get("overlap_coef") is not None:
+            poor = " · ⚠ poor overlap" if ps.get("poor") else ""
+            st.caption(f"PS overlap coefficient {ps['overlap_coef']:.2f}{poor}")
+    elif ps is None:
+        st.caption("PS overlap: n/a (unadjusted / single-arm / non-PS method)")
 
 
 def _eyebrow(text):
@@ -293,7 +301,16 @@ def main() -> None:
     if context_path and os.path.exists(context_path):
         from tteEngine.contracts.context import load_context_jsonl
         context_records = list(load_context_jsonl(context_path))
-    m = build_dashboard(rows, sepsis_ncts=sepsis, context_records=context_records)
+    ledger_records = None
+    ledger_path = os.environ.get("TTE_LEDGER_JSONL", "")
+    if ledger_path and os.path.exists(ledger_path):
+        try:  # gated: #105 adjustability loader (import-light when present)
+            from tteEngine.contracts.adjustability import load_ledger_jsonl
+            ledger_records = list(load_ledger_jsonl(ledger_path))
+        except ImportError:
+            ledger_records = None
+    m = build_dashboard(rows, sepsis_ncts=sepsis, context_records=context_records,
+                        ledger_records=ledger_records)
 
     t_over, t_all, t_trial = st.tabs(["Overview", "All trials", "Per-trial"])
     with t_over:
