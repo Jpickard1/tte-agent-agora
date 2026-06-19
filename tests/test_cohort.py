@@ -220,6 +220,24 @@ def test_combo_strategy_from_spec_arm_field():
     assert by.get("hat") == [10] and sorted(by.get("control", [])) == [11, 12]
 
 
+def test_missing_anchor_does_not_anchor_on_outcome():
+    # anchor 'icu_admission' but NO location event emitted (probe's empty-cohort root cause).
+    #  30: earliest event IS the death -> must anchor on the later med, NOT the outcome -> KEPT
+    #  31: ONLY an outcome event -> unanchorable -> dropped explicitly (NOT immortal-excluded)
+    spec = SPEC.model_copy(update={
+        "eligibility": [],  # isolate the anchor behavior
+        "time_zero": TimeZeroRule(anchor="icu_admission", grace_window_hours=24.0)})
+    ev = _frame([
+        (30, _hr(0), "outco", "death", "1"),          # earliest is the OUTCOME (immortal trap)
+        (30, _hr(1), "medic", "hydrocortisone", "1"),
+        (31, _hr(0), "outco", "death", "1")])         # only an outcome -> unanchorable
+    c = build_cohort(ev, spec, dataset="TEST")
+    enrolled = sorted(tid for arm in c.arms for tid in arm.trajectory_ids)
+    assert enrolled == [30]                            # anchored on the med, not the death
+    assert c.diagnostics.n_unanchorable == 1           # 31 dropped explicitly, not silently immortal
+    assert c.diagnostics.n_excluded_immortal == 0      # the old bug excluded EVERYONE here
+
+
 def test_unmeasurable_eligibility_skipped_not_failing():
     # an age (DEMOGRAPHIC) criterion with NO demog events present -> skipped, not failing all
     spec = SPEC.model_copy(update={"eligibility": SPEC.eligibility + [

@@ -35,6 +35,7 @@ class CohortDiagnostics(BaseModel):
     leakage_warnings: list[str] = Field(default_factory=list)
     n_skipped_unmeasurable: int = 0
     skipped_eligibility: list[str] = Field(default_factory=list)  # criteria not measurable in this dataset
+    n_unanchorable: int = 0  # dropped: no anchorable (non-outcome) event -> no valid t0
 
 
 class CohortResult(BaseModel):
