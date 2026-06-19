@@ -38,17 +38,19 @@ def test_lab_and_diagnosis_measurable_in_both():
         assert _by(rep, "eligibility", "lactate").status == M.MEASURABLE
 
 
-def test_vitals_measurement_measurable_mimic_proxy_eicu():
-    # MEASUREMENT (vitals) is direct in MIMIC (chartevents) but only a proxy in
-    # eICU (vitalPeriodic exists, adapter not wired) -> a real surfaced gap.
-    assert _by(M.measurability_report(_spec(), "MIMIC-IV"), "eligibility", "map").status == M.MEASURABLE
-    assert _by(M.measurability_report(_spec(), "eICU-CRD"), "eligibility", "map").status == M.PROXY
+def test_vitals_measurement_measurable_in_icu_dbs_proxy_in_mgb():
+    # MEASUREMENT (vitals) is now DIRECT in MIMIC (chartevents) AND eICU (#83 wired
+    # vitalPeriodic). MGB (gated passthrough) still only proxies it -> surfaced gap.
+    for ds in ("MIMIC-IV", "eICU-CRD"):
+        assert _by(M.measurability_report(_spec(), ds), "eligibility", "map").status == M.MEASURABLE
+    assert _by(M.measurability_report(_spec(), "MGB"), "eligibility", "map").status == M.PROXY
 
 
-def test_mortality_outcome_measurable_mimic_proxy_eicu():
-    assert _by(M.measurability_report(_spec(), "MIMIC-IV"), "outcome", "death").status == M.MEASURABLE
-    eicu = _by(M.measurability_report(_spec(), "eICU-CRD"), "outcome", "death")
-    assert eicu.status == M.PROXY and "discharge status" in eicu.reason
+def test_mortality_outcome_measurable_in_icu_dbs_proxy_in_mgb():
+    for ds in ("MIMIC-IV", "eICU-CRD"):
+        assert _by(M.measurability_report(_spec(), ds), "outcome", "death").status == M.MEASURABLE
+    mgb = _by(M.measurability_report(_spec(), "MGB"), "outcome", "death")
+    assert mgb.status == M.PROXY and "discharge status" in mgb.reason
 
 
 def test_exposure_medication_measurable_both():
@@ -65,33 +67,34 @@ def test_soft_outcome_unmeasurable_everywhere():
 
 
 def test_summary_counts_and_gaps_surfaced():
-    rep = M.measurability_report(_spec(), "eICU-CRD")
+    rep = M.measurability_report(_spec(), "MGB")     # gated: still proxies vitals + mortality
     s = rep.summary
     assert s["n_elements"] == len(rep.elements)
     assert s["n_measurable"] + s["n_proxy"] + s["n_unmeasurable"] == s["n_elements"]
-    # eICU has gaps (vitals proxy + mortality proxy) -> not fully measurable, gaps listed
     assert s["fully_measurable"] is False
     assert any(g["concept"] == "map" for g in s["gaps"])
     assert any(g["concept"] == "death" for g in s["gaps"])
 
 
 def test_build_catalog_per_trial_per_db():
-    cat = M.build_measurability_catalog([_spec(), _spec()], datasets=("MIMIC-IV", "eICU-CRD"))
-    assert cat["summary"]["n_reports"] == 4 and cat["summary"]["n_trials"] == 2
-    assert cat["summary"]["gap_reasons"]                 # gaps tallied, not hidden
-    # 5 elements/report (3 eligibility + 1 exposure + 1 outcome) x 4 reports = 20
-    assert len(cat["elements"]) == 20
-    # MIMIC report for this spec is fully measurable (all domains direct); eICU is not
-    mimic_reports = [r for r in cat["reports"] if r["dataset"] == "MIMIC-IV"]
-    assert all(r["fully_measurable"] for r in mimic_reports)
+    cat = M.build_measurability_catalog([_spec(), _spec()], datasets=("MIMIC-IV", "eICU-CRD", "MGB"))
+    assert cat["summary"]["n_reports"] == 6 and cat["summary"]["n_trials"] == 2
+    assert cat["summary"]["gap_reasons"]                 # MGB proxies -> gaps tallied, not hidden
+    # 5 elements/report (3 eligibility + 1 exposure + 1 outcome) x 6 reports = 30
+    assert len(cat["elements"]) == 30
+    # both ICU DBs are now fully measurable for this spec (all domains direct)
+    icu = [r for r in cat["reports"] if r["dataset"] in ("MIMIC-IV", "eICU-CRD")]
+    assert all(r["fully_measurable"] for r in icu)
 
 
 def test_direct_sets_match_adapters_no_drift():
     pytest.importorskip("pandas")
     from tteEngine.adapters import eicu, mimic
-    # DIRECT mirrors each adapter's TABLE_SPEC (+ MIMIC's deathtime OUTCOME)
+    # DIRECT mirrors each adapter's TABLE_SPEC plus the SPECIAL-CASED domains each
+    # emits outside TABLE_SPEC (MIMIC deathtime OUTCOME; eICU vitals + mortality, #83).
     assert M.DATASET_DIRECT["MIMIC-IV"] - {EventType.OUTCOME} == set(mimic.TABLE_SPEC)
-    assert M.DATASET_DIRECT["eICU-CRD"] == set(eicu.TABLE_SPEC)
+    assert (M.DATASET_DIRECT["eICU-CRD"] - {EventType.MEASUREMENT, EventType.OUTCOME}
+            == set(eicu.TABLE_SPEC))
 
 
 def run():

@@ -83,6 +83,64 @@ def test_resolver_injection():
     assert set(df["TRAJECTORY_ID"]) == {10}
 
 
+# --- #83: vitals (MEASUREMENT) + mortality (OUTCOME) ---
+
+def _vitals_tables():
+    t = _tables()
+    # wide vitalPeriodic: systemicmean -> 'map'; in-window (+30m) and out (+6000m)
+    t["vitalperiodic"] = pd.DataFrame({
+        "patientunitstayid": [10, 10, 20],
+        "observationoffset": [30, 6000, 30],
+        "heartrate": [110, 95, 80],
+        "systemicmean": [60.0, 70.0, 90.0],
+    })
+    t["patient"] = pd.DataFrame({
+        "patientunitstayid": [10, 20],
+        "hospitaldischargestatus": ["Expired", "Alive"],   # stay10 dies; stay20 survives
+        "hospitaldischargeoffset": [4000, 5000],            # post-baseline (not window-clipped)
+        "unitdischargestatus": ["Alive", "Alive"],
+        "unitdischargeoffset": [2000, 2500],
+    })
+    return t
+
+
+def test_vitals_measurement_melted_and_window_filtered():
+    plan = ExtractionPlan(
+        nct_id="X", cohort_filter_concepts=["99592"],
+        concepts=[ConceptRequest(concept="map", event_type=EventType.MEASUREMENT, role="covariate")],
+        window_hours=(-48.0, 24.0),
+    )
+    df = eicu.extract(plan, _vitals_tables())
+    meas = df[df["EVENT_TYPE"] == "measu"]
+    assert set(meas["TRAJECTORY_ID"]) == {10}            # cohort only
+    assert list(meas["EVENT_NAME"]) == ["map"]           # systemicmean -> canonical 'map'
+    assert list(meas["EVENT_VALUE"]) == ["60.0"]         # +6000m reading dropped by window
+    validate_canonical(df)
+
+
+def test_mortality_outcome_from_discharge_status_unclipped():
+    plan = ExtractionPlan(
+        nct_id="X", cohort_filter_concepts=["99592"],
+        concepts=[ConceptRequest(concept="death", event_type=EventType.OUTCOME, role="outcome")],
+        window_hours=(-48.0, 24.0),
+    )
+    df = eicu.extract(plan, _vitals_tables())
+    out = df[df["EVENT_TYPE"] == "outco"]
+    assert list(out["EVENT_NAME"]) == ["death"]          # emitted by concept name
+    assert set(out["TRAJECTORY_ID"]) == {10}             # only the Expired stay (+4000m, unclipped)
+    validate_canonical(df)
+
+
+def test_non_mortality_outcome_not_emitted_from_discharge():
+    # a non-mortality OUTCOME concept must NOT be fabricated from discharge status
+    plan = ExtractionPlan(
+        nct_id="X", cohort_filter_concepts=["99592"],
+        concepts=[ConceptRequest(concept="readmission", event_type=EventType.OUTCOME, role="outcome")],
+    )
+    df = eicu.extract(plan, _vitals_tables())
+    assert df[df["EVENT_TYPE"] == "outco"].empty
+
+
 def run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
