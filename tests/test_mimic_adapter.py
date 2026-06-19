@@ -2,7 +2,9 @@
 DataFrames (no real CSVs): assert the adapter is spec-driven (cohort + concept +
 window filtering) and emits a canonical stream that passes validate_canonical."""
 
-import pandas as pd
+import pytest
+
+pd = pytest.importorskip("pandas")  # data-layer dep ([analysis] extra); skip if absent (CI [dev])
 
 from tteEngine.adapters import mimic
 from tteEngine.common_format import validate_canonical
