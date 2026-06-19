@@ -105,6 +105,38 @@ def test_build_emulable_jobs_reports_catalog_no_network(monkeypatch):
     assert catalog["n_emulable"] + catalog["n_unemulable"] + catalog["n_unparseable"] == 4
 
 
+def test_run_live_threads_arm_strategy(tmp_path, monkeypatch):
+    """#162 (jpic-confirmed): the run forces per-protocol combo arms by default
+    (arm_strategy='all') and threads the choice all the way into run_corpus + the
+    summary. 'all' is a no-op for single-component arms, so single-drug trials are
+    unchanged; this just stops combo trials over-including on one routine component."""
+    import tteEngine.live_run as lr
+
+    captured = {}
+    real = lr.run_corpus_to_jsonl
+
+    def _spy(jobs, datasets, path, **kw):
+        captured["arm_strategy"] = kw.get("arm_strategy")
+        return real(jobs, datasets, path, **kw)
+
+    monkeypatch.setattr(lr, "run_corpus_to_jsonl", _spy)
+    jobs = _jobs(1)
+    specs = [s for _, s in jobs]
+    # default: 'all' reaches run_corpus + is recorded in summary
+    summary = run_live(extract_fn=_extract_ok, engine_fn=_crude_engine,
+                       compare_fn=_stub_compare, jobs=jobs, specs=specs, out_dir=tmp_path,
+                       datasets=("MIMIC-IV",), figures=False)
+    assert captured["arm_strategy"] == "all"
+    assert summary["arm_strategy"] == "all"
+    # explicit override is honored
+    summary2 = run_live(extract_fn=_extract_ok, engine_fn=_crude_engine,
+                        compare_fn=_stub_compare, jobs=jobs, specs=specs,
+                        out_dir=tmp_path / "any", datasets=("MIMIC-IV",),
+                        arm_strategy="any", figures=False)
+    assert captured["arm_strategy"] == "any"
+    assert summary2["arm_strategy"] == "any"
+
+
 def test_run_live_emits_audit_sidecar(tmp_path):
     """#143: audit.jsonl persisted, joined on (nct_id,dataset) like corpus/context/ledger."""
     from tteEngine.contracts.audit import load_audit_jsonl
