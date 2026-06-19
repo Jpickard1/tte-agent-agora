@@ -42,6 +42,22 @@ from .triage import score_spec
 DATASETS = ("MIMIC-IV", "eICU-CRD")
 
 
+def _lean_plan_fn(spec, *, dataset):
+    """Lean extraction plan: drop LAB/MEASUREMENT concepts, which trigger the
+    multi-GB per-trial labevents/chartevents scans (and mostly back outcomes that
+    aren't measurable in ICU EHR anyway). Keeps the cohort dx + medications (arm
+    assignment) + mortality outcome -> seconds/trial instead of minutes, which is
+    what makes the >=1k corpus feasible. Use lean=False for full extraction (labs
+    as covariates) on a small corpus or once a shared pre-pass exists."""
+    from .contracts.events import EventType
+    from .ctgov import spec_to_plan
+
+    plan = spec_to_plan(spec, dataset=dataset)
+    plan.concepts = [c for c in plan.concepts
+                     if c.event_type not in (EventType.LAB, EventType.MEASUREMENT)]
+    return plan
+
+
 def build_emulable_jobs(*, max_studies, datasets=DATASETS, sepsis_first=True,
                         threshold=0.5, emulable_only=True, http_get=None):
     """Fetch the sepsis-first ctgov catalog and keep trials emulable in >=1 dataset.
@@ -53,8 +69,7 @@ def build_emulable_jobs(*, max_studies, datasets=DATASETS, sepsis_first=True,
 
     kw = {"http_get": http_get} if http_get is not None else {}
     studies = fetch_corpus(max_studies=max_studies, sepsis_first=sepsis_first, **kw)
-    jobs: list[tuple[dict, object]] = []
-    specs: list = []
+    tagged: list[tuple[bool, dict, object]] = []  # (is_sepsis, study, spec)
     n_unparseable = n_unemulable = n_sepsis = 0
     for s in studies:
         try:
@@ -66,10 +81,14 @@ def build_emulable_jobs(*, max_studies, datasets=DATASETS, sepsis_first=True,
         if emulable_only and not any(sc.emulable for sc in scores):
             n_unemulable += 1
             continue
-        jobs.append((s, spec))
-        specs.append(spec)
-        if scores and scores[0].is_sepsis:
-            n_sepsis += 1
+        is_sep = bool(scores and scores[0].is_sepsis)
+        n_sepsis += is_sep
+        tagged.append((is_sep, s, spec))
+    # SEPSIS-FIRST within the emulable set (stable): sepsis trials processed/persisted
+    # first, so a partial run still has the priority cohort + the gallery leads with it.
+    tagged.sort(key=lambda t: not t[0])
+    jobs = [(s, spec) for _, s, spec in tagged]
+    specs = [spec for _, _, spec in tagged]
     catalog = {
         "n_fetched": len(studies),
         "n_unparseable": n_unparseable,
@@ -133,15 +152,16 @@ def _write_analysis(comparisons, specs, out, *, datasets, context=True, figures=
     }
 
 
-def run_live(*, extract_fn, engine_fn=None, compare_fn=None, jobs=None, specs=None,
-             out_dir="live_outputs", datasets=DATASETS, max_studies=2000,
+def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=None, specs=None,
+             out_dir="live_outputs", datasets=DATASETS, max_studies=2000, max_trials=None,
              adjustment="iptw", covariates=None, threshold=0.5, emulable_only=True,
-             http_get=None, context=True, figures=True) -> dict:
+             lean=True, http_get=None, context=True, figures=True) -> dict:
     """Run the live corpus end-to-end and write the gallery artifacts to out_dir:
-    corpus.jsonl, context.jsonl, RESULTS_NARRATIVE.md, drops.jsonl, summary.json
-    (+ forest.png). `jobs`/`specs` may be injected (tests / a pre-built catalog);
-    otherwise they are built from fetch_corpus. `engine_fn` defaults to the real
-    #10 estimator via make_engine_provider; inject another for tests."""
+    corpus.jsonl, context.jsonl, ledger.jsonl, RESULTS_NARRATIVE.md, drops.jsonl,
+    summary.json (+ forest.png). `jobs`/`specs` may be injected (tests / a pre-built
+    catalog); otherwise built from fetch_corpus. `engine_fn` defaults to the real #10
+    estimator. lean=True (default) prunes the multi-GB lab/measurement scans so a
+    >=1k-trial corpus is feasible; pass plan_fn to override the plan entirely."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -154,11 +174,19 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, jobs=None, specs=No
                    "max_studies": max_studies, "datasets": list(datasets),
                    "note": "jobs injected"}
 
+    if max_trials is not None and len(jobs) > max_trials:
+        catalog["n_capped_to"] = max_trials      # explicit cap (sepsis-first), never silent
+        jobs, specs = jobs[:max_trials], specs[:max_trials]
+
     engine_fn = engine_fn or make_engine_provider(covariates or [], adjustment=adjustment)
+    if plan_fn is None and lean:
+        plan_fn = _lean_plan_fn
     drops = DropLog()
     run_kw = {"extract_fn": extract_fn, "engine_fn": engine_fn}
     if compare_fn is not None:
         run_kw["compare_fn"] = compare_fn
+    if plan_fn is not None:
+        run_kw["plan_fn"] = plan_fn
     n_written, drops = run_corpus_to_jsonl(
         jobs, list(datasets), out / "corpus.jsonl", drops=drops, **run_kw)
 
@@ -175,6 +203,7 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, jobs=None, specs=No
         "n_dropped": len(drops),
         "drops_by_reason": drops.by_reason(),
         "adjustment": adjustment,
+        "lean": bool(plan_fn is _lean_plan_fn),
         "datasets": list(datasets),
         "catalog": catalog,
         "out_dir": str(out),
@@ -215,9 +244,13 @@ def main(argv=None):
     ap.add_argument("--out", default="live_outputs")
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
     ap.add_argument("--max-studies", type=int, default=2000)
+    ap.add_argument("--max-trials", type=int, default=None,
+                    help="cap the number of (sepsis-first) trials run (e.g. for a quick real slice)")
     ap.add_argument("--adjustment", default="iptw", help="iptw | psm | cox | crude")
     ap.add_argument("--synthetic", action="store_true",
                     help="scaffold: synthetic confounded stream (no real data) through the real engine")
+    ap.add_argument("--full", action="store_true",
+                    help="full extraction (lab/measurement covariates); default is LEAN (#124) for scale")
     ap.add_argument("--no-context", action="store_true")
     ap.add_argument("--no-figures", action="store_true")
     a = ap.parse_args(argv)
@@ -225,8 +258,8 @@ def main(argv=None):
     extract_fn = _synthetic_extract_fn() if a.synthetic else _real_extract_fn(a.datasets)
     summary = run_live(
         extract_fn=extract_fn, out_dir=a.out, datasets=tuple(a.datasets),
-        max_studies=a.max_studies, adjustment=a.adjustment,
-        context=not a.no_context, figures=not a.no_figures)
+        max_studies=a.max_studies, max_trials=a.max_trials, adjustment=a.adjustment,
+        lean=not a.full, context=not a.no_context, figures=not a.no_figures)
     print(json.dumps(summary, indent=2, default=str))
 
 
