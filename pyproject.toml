@@ -14,6 +14,7 @@ dependencies = [
 analysis = ["lifelines", "statsmodels", "scikit-learn", "numpy", "pandas", "pyarrow"]
 ctgov = ["requests"]
 viz = ["matplotlib"]
+web = ["streamlit", "altair", "pandas"]
 dev = ["pytest", "ruff"]
 
 [build-system]
