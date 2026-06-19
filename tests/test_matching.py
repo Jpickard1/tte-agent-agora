@@ -92,6 +92,46 @@ def test_build_drug_catalog_scans_codes(tmp_path):
     assert cs.match("001825") is not None      # code from the scanned catalog
 
 
+def test_emit_match_provenance_into_canonical_schema():
+    from tteEngine.contracts.audit import Confidence, MatchProvenance
+    m = M.condition_codeset("Sepsis").match("A4101")
+    mp = M.to_match_provenance(m, trajectory_id=7, arm="treated", t_rel_hours=2.0,
+                               source_table=M.SOURCE_TABLES[("diagnosis", "MIMIC-IV")])
+    assert isinstance(mp, MatchProvenance)
+    assert mp.method == Confidence.ICD_HIERARCHY and mp.matched_code == "A4101"
+    assert mp.trajectory_id == 7 and mp.arm == "treated" and mp.source_table == "diagnoses_icd"
+
+
+def test_drug_match_emits_ingredient_provenance():
+    from tteEngine.contracts.audit import Confidence
+    cs = M.drug_codeset("hydrocortisone", _mimic_drug_catalog())
+    mp = M.to_match_provenance(cs.match("004250"), trajectory_id=1, arm="steroid")
+    assert mp.method == Confidence.INGREDIENT and mp.concept == "hydrocortisone"
+
+
+def test_build_drug_matcher_from_spec_and_catalog():
+    from tteEngine.contracts.trial_spec import Arm, TargetTrialSpec
+    spec = TargetTrialSpec(nct_id="N", arms=[
+        Arm(name="steroid", intervention_concepts=["hydrocortisone"]),
+        Arm(name="control", is_control=True)])
+    matcher = M.build_drug_matcher(spec, "MIMIC-IV", catalog=_mimic_drug_catalog())
+    assert set(matcher) == {"hydrocortisone"}                       # arm interventions only
+    assert matcher["hydrocortisone"].match("004250") is not None    # code-set built
+
+
+def test_build_drug_catalog_cache_roundtrip(tmp_path):
+    pd = pytest.importorskip("pandas")
+    root = tmp_path / "m"
+    (root / "hosp").mkdir(parents=True)
+    pd.DataFrame({"drug": ["Hydrocortisone"], "gsn": ["001825"], "ndc": ["a"]}).to_csv(
+        root / "hosp" / "prescriptions.csv.gz", index=False, compression="gzip")
+    cache = tmp_path / "c"
+    cat = M.build_drug_catalog("MIMIC-IV", root=str(root), cache_dir=cache)
+    assert (cache / "drug_catalog_MIMIC-IV.json").exists()
+    again = M.build_drug_catalog("MIMIC-IV", root="/nonexistent", cache_dir=cache)  # served from cache
+    assert again == cat
+
+
 def run():
     import tempfile
     from pathlib import Path

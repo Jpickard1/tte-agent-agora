@@ -139,7 +139,8 @@ def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
     med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
     if med_names:
         tables["prescriptions"] = _read_filtered(
-            f"{hosp}/prescriptions.csv.gz", usecols=["hadm_id", "drug", "starttime", "dose_val_rx"],
+            f"{hosp}/prescriptions.csv.gz",
+            usecols=["hadm_id", "drug", "starttime", "dose_val_rx", "gsn", "ndc"],  # gsn/ndc for #131 code-match
             keep=lambda c: c["drug"].astype(str).str.lower().isin(med_names)
             & c["hadm_id"].isin(cohort_hadm), chunksize=chunksize)
     return tables
@@ -205,7 +206,8 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
     med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
     if med_names:
         tables["medication"] = _read_filtered(
-            f"{root}/medication.csv.gz", usecols=["patientunitstayid", "drugstartoffset", "drugname", "dosage"],
+            f"{root}/medication.csv.gz",
+            usecols=["patientunitstayid", "drugstartoffset", "drugname", "dosage", "drughiclseqno"],  # HICL for #131
             keep=lambda c: c["drugname"].astype(str).str.lower().isin(med_names)
             & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
 
