@@ -111,6 +111,10 @@ def _write_analysis(comparisons, specs, out, *, datasets, context=True, figures=
         n_context = write_context_sidecar(specs, out / "context.jsonl",
                                           datasets=tuple(datasets), results_by_trial=results_by_trial)
 
+    # #105 confounder adjustability ledger + PS diagnostics, joined on (nct_id,dataset)
+    from .adjustability import write_ledger_sidecar
+    n_ledger = write_ledger_sidecar(comparisons, specs, out / "ledger.jsonl")
+
     figure_path = None
     if figures:
         try:
@@ -124,6 +128,7 @@ def _write_analysis(comparisons, specs, out, *, datasets, context=True, figures=
         "calibration_slope": cal.slope,
         "i2": meta.pooled_effect.i2,
         "n_context": n_context,
+        "n_ledger": n_ledger,
         "forest_figure": figure_path,
     }
 
