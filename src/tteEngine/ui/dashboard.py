@@ -43,6 +43,7 @@ def build_dashboard(
     *,
     sepsis_ncts: set[str] | None = None,
     context_records=None,
+    ledger_records=None,
 ) -> DashboardModel:
     """Assemble the dashboard model from a comparison stream + the analysis outputs.
 
@@ -68,7 +69,13 @@ def build_dashboard(
             sepsis_pooled = {"estimate": pe.pooled_estimate, "ci_low": pe.ci_low,
                              "ci_high": pe.ci_high, "i2": pe.i2, "k": pe.k}
 
-    cards = build_cards(rows, sepsis_ncts=sepsis)
+    ledger_index = None
+    if ledger_records is not None:
+        def _k(rec):
+            return (rec.get("nct_id"), rec.get("dataset")) if isinstance(rec, dict) \
+                else (getattr(rec, "nct_id", None), getattr(rec, "dataset", None))
+        ledger_index = {_k(r): r for r in ledger_records}
+    cards = build_cards(rows, sepsis_ncts=sepsis, ledger_index=ledger_index)
     context_summary: dict = {}
     if context_records is not None:
         from tteEngine.ui.context_panel import corpus_context_summary, index_context, why_for
