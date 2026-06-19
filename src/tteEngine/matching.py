@@ -21,8 +21,12 @@ needs pandas (lazy).
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+
+DRUG_CATALOG_CACHE = Path.home() / ".cache" / "tteEngine" / "drug_catalog"
 
 # Confidence tiers (LOCKED) — string values are the single source of truth, shared
 # with tte1's canonical contracts.audit.Confidence (#139): the matcher emits these
@@ -183,10 +187,18 @@ def drug_codeset(concept: str, drug_catalog: list[dict], *, code_fields=("gsn", 
     return out
 
 
-def build_drug_catalog(dataset: str, *, root: str | None = None, chunksize: int = 1_000_000) -> list[dict]:
+def build_drug_catalog(dataset: str, *, root: str | None = None, chunksize: int = 1_000_000,
+                       cache_dir: str | Path | None = None, refresh: bool = False) -> list[dict]:
     """Scan the dataset's drug table ONCE for the distinct (name, codes) catalog used
     to build drug code sets: MIMIC prescriptions (drug, gsn, ndc); eICU medication
-    (drugname, drughiclseqno). pandas (lazy)."""
+    (drugname, drughiclseqno). Cached as JSON under `cache_dir` ($HOME by default
+    when caching) so the ~minute scan happens once. pandas (lazy)."""
+    cache_dir = Path(cache_dir) if cache_dir is not None else None
+    if cache_dir is not None:
+        cpath = cache_dir / f"drug_catalog_{dataset}.json"
+        if cpath.exists() and not refresh:
+            return json.loads(cpath.read_text())
+
     import pandas as pd
 
     from tteEngine.adapters.live_loader import EICU_ROOT, MIMIC_ROOT
@@ -207,7 +219,51 @@ def build_drug_catalog(dataset: str, *, root: str | None = None, chunksize: int 
             key = tuple(d.get(c) for c in cols)
             if key not in seen:
                 seen[key] = {"name": d.get(name_col), **{c: d.get(c) for c in cols if c != name_col}}
-    return list(seen.values())
+    catalog = list(seen.values())
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cpath.write_text(json.dumps(catalog))
+    return catalog
+
+
+#: drug code fields per dataset (MIMIC gsn/ndc; eICU HICL).
+DRUG_CODE_FIELDS = {"MIMIC-IV": ("gsn", "ndc"), "eICU-CRD": ("drughiclseqno",)}
+
+
+def build_drug_matcher(spec, dataset: str, *, catalog: list[dict] | None = None,
+                       root: str | None = None, cache_dir: str | Path | None = None) -> dict:
+    """Build the per-arm-intervention drug matcher {concept -> DrugCodeSet} for a
+    trial in a dataset, from the (cached) drug catalog. SEAM-INDEPENDENT (#131): this
+    is the matcher; the adapter med-EMIT step consumes it once the seam is locked."""
+    cat = catalog if catalog is not None else build_drug_catalog(dataset, root=root, cache_dir=cache_dir)
+    fields = DRUG_CODE_FIELDS.get(dataset, ("gsn", "ndc"))
+    concepts = {iv for arm in spec.arms for iv in arm.intervention_concepts if iv}
+    return {c: drug_codeset(c, cat, code_fields=fields) for c in concepts}
+
+
+# --------------------------------------------------------------------------- #
+# Emit into the canonical audit schema (contracts.audit, #140/#144) — no 2nd schema.
+# (Re-added: this raced the #141 merge and was stranded; #144 supplied the fields.)
+# --------------------------------------------------------------------------- #
+#: (category, dataset) -> source table the match came from (for provenance/UI).
+SOURCE_TABLES = {
+    ("drug", "MIMIC-IV"): "prescriptions", ("drug", "eICU-CRD"): "medication",
+    ("diagnosis", "MIMIC-IV"): "diagnoses_icd", ("diagnosis", "eICU-CRD"): "diagnosis",
+    ("lab", "MIMIC-IV"): "labevents", ("lab", "eICU-CRD"): "lab",
+}
+
+
+def to_match_provenance(match: "CodeMatch", *, trajectory_id: int, arm: str,
+                        t_rel_hours: float | None = None, source_table: str | None = None):
+    """Build a contracts.audit.MatchProvenance (#135/#140) from a matcher CodeMatch +
+    cohort context. The matcher supplies code/name/concept/method; the cohort seam
+    supplies trajectory/arm/time. One canonical schema — this is the emit point."""
+    from tteEngine.contracts.audit import Confidence, MatchProvenance
+
+    return MatchProvenance(
+        trajectory_id=int(trajectory_id), arm=arm,
+        matched_event_name=match.name, matched_code=match.code, concept=match.concept,
+        method=Confidence(match.method), t_rel_hours=t_rel_hours, source_table=source_table)
 
 
 __all__ = [
@@ -215,4 +271,6 @@ __all__ = [
     "TIER_RANK", "LOW_CONFIDENCE", "CodeMatch",
     "IcdCodeSet", "ICD_FAMILIES", "condition_codeset",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
+    "DRUG_CODE_FIELDS", "build_drug_matcher", "DRUG_CATALOG_CACHE",
+    "SOURCE_TABLES", "to_match_provenance",
 ]
