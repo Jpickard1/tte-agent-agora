@@ -51,3 +51,16 @@ def run():
 if __name__ == "__main__":
     import sys
     sys.exit(0 if run() else 1)
+
+
+def test_pruned_event_types_skips_not_fails():
+    # #163: in a lean run, a lab eligibility criterion is PRUNED -> must be reported
+    # not-assessable (skipped), NOT enforced (which would empty the cohort).
+    from tteEngine.contracts.events import EventType as ET
+    ok, reason = M.eligibility_measurable("lactate", ET.LAB, "MIMIC-IV",
+                                          pruned_event_types={ET.LAB, ET.MEASUREMENT})
+    assert ok is False and "pruned" in reason
+    # a dx criterion (not pruned) is still enforced normally
+    ok2, _ = M.eligibility_measurable("sepsis", ET.DIAGNOSIS, "MIMIC-IV",
+                                      pruned_event_types={ET.LAB, ET.MEASUREMENT})
+    assert ok2 is True

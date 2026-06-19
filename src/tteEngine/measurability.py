@@ -234,7 +234,7 @@ def _index_codes(index: dict, category: str, concept: str) -> int:
 
 
 def eligibility_measurable(concept: str, event_type: EventType, dataset: str, *,
-                           index: dict | None = None) -> tuple[bool, str]:
+                           index: dict | None = None, pruned_event_types=None) -> tuple[bool, str]:
     """THE #133 eligibility-measurability resolver (LOCKED signature) — tte1's #138
     `measurable_fn`: is an eligibility criterion truly assessable in `dataset`?
     Returns (measurable, reason) for an EligibilityDecision{measurable, reason}.
@@ -242,7 +242,15 @@ def eligibility_measurable(concept: str, event_type: EventType, dataset: str, *,
     Without `index`: the event-type heuristic (captured domain -> measurable/proxy).
     With `index` (a #109 vocab-index dict): DATA-DRIVEN — also requires the concept
     to resolve to >=1 REAL code in this dataset, so 'measurable' reflects what's
-    actually there, not just the domain. Pure (no pandas)."""
+    actually there, not just the domain. Pure (no pandas).
+
+    `pruned_event_types` (#163): in a LEAN run that prunes lab/measurement events,
+    those criteria have NO stream events -> they must be recorded skipped_unmeasurable,
+    NOT enforced-and-failed (which empties the whole cohort). A criterion whose
+    event_type is pruned is reported not-assessable so build_cohort skips it."""
+    if pruned_event_types and event_type in set(pruned_event_types):
+        return False, (f"{event_type.value} pruned in this (lean) run — criterion not "
+                       "extracted, skipped (not enforced) to avoid emptying the cohort")
     status, reason = _classify(concept, event_type, dataset, is_outcome=False)
     if status == UNMEASURABLE:
         return False, reason
