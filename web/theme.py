@@ -78,6 +78,15 @@ hr, [data-testid="stDivider"]{ border-color:var(--hairline)!important; }
 .b-inc { color:#4a4656; background:#4a465614; border-color:#4a465655; }
 .card{ background:var(--surface); border:1px solid var(--hairline); border-radius:12px;
   padding:14px 16px; box-shadow:0 1px 3px rgba(50,38,70,.06); margin-bottom:10px; }
+/* guided walkthrough stepper (sidebar) */
+.step{ display:flex; align-items:center; gap:10px; padding:5px 0; font-size:14px; }
+.step .node{ width:22px;height:22px;border-radius:7px;display:flex;align-items:center;
+  justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;flex:none; }
+.step.done .node{ background:var(--teal); color:#faf8f4; }
+.step.active .node{ background:var(--surface); border:2px solid var(--plum); color:var(--plum); }
+.step.locked .node{ background:var(--surface-2); border:1px solid var(--border); color:var(--faint); }
+.step.done .lbl{ color:var(--ink-2); } .step.active .lbl{ color:var(--ink); font-weight:600; }
+.step.locked .lbl{ color:var(--faint); }
 </style>
 """
 
@@ -103,6 +112,18 @@ def header_html(crumb: str, *, source: str = "persisted corpus") -> str:
 def badge_html(agreement: str | None) -> str:
     cls = {"concordant": "b-conc", "discordant": "b-disc"}.get(agreement or "", "b-inc")
     return f"<span class='badge {cls}'>{agreement or 'inconclusive'}</span>"
+
+
+def stepper_html(steps: list[str], active: int = 0) -> str:
+    """emulaTTE-style guided stepper with progress: steps before `active` are done
+    (teal check), `active` is highlighted (plum), later steps are locked."""
+    rows = []
+    for i, label in enumerate(steps):
+        cls = "done" if i < active else ("active" if i == active else "locked")
+        node = "✓" if i < active else str(i + 1)
+        rows.append(f"<div class='step {cls}'><div class='node'>{node}</div>"
+                    f"<div class='lbl'>{label}</div></div>")
+    return "".join(rows)
 
 
 def pipeline_html() -> str:

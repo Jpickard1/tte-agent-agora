@@ -1,6 +1,6 @@
 """Results gallery (#104) — the clinician-facing capstone, modeled on emulaTTE.
 
-Three clear views via top tabs (not a function list):
+Three clear views via a guided sidebar path-stepper with progress (not a function list):
   1. OVERVIEW   — what the system does, plain-language + a guided pipeline.
   2. ALL TRIALS — corpus headline (concordance + CI, I²/τ², calibration) + a
                   sortable/filterable table of every (trial, dataset), each row
@@ -278,6 +278,7 @@ def main() -> None:
     st.set_page_config(page_title="tteEngine — Trial Emulation Results", layout="wide")
     st.markdown(theme.CSS, unsafe_allow_html=True)
 
+    st.sidebar.markdown("<div class='eyebrow'>DATA SOURCE</div>", unsafe_allow_html=True)
     path = st.sidebar.text_input("Corpus JSONL", value=os.environ.get("TTE_CORPUS_JSONL", ""))
     context_path = st.sidebar.text_input("WHY context JSONL (optional)", value=os.environ.get("TTE_CONTEXT_JSONL", ""))
     catalog = st.sidebar.text_input("Catalog CSV (optional)", value=os.environ.get("TTE_CATALOG_CSV", ""))
@@ -312,13 +313,13 @@ def main() -> None:
     m = build_dashboard(rows, sepsis_ncts=sepsis, context_records=context_records,
                         ledger_records=ledger_records)
 
-    t_over, t_all, t_trial = st.tabs(["Overview", "All trials", "Per-trial"])
-    with t_over:
-        view_overview(m)
-    with t_all:
-        view_all_trials(m)
-    with t_trial:
-        view_per_trial(m)
+    # guided walkthrough: a sidebar path-stepper with progress (emulaTTE feel)
+    views = ["What it does", "All-trials results", "Inspect a trial"]
+    st.sidebar.markdown("<div class='eyebrow'>GUIDED PATH</div>", unsafe_allow_html=True)
+    choice = st.sidebar.radio("Guided path", views, label_visibility="collapsed")
+    idx = views.index(choice)
+    st.sidebar.markdown(theme.stepper_html(views, idx), unsafe_allow_html=True)
+    (view_overview, view_all_trials, view_per_trial)[idx](m)
 
 
 if __name__ == "__main__":

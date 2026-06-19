@@ -266,3 +266,18 @@ def test_chart_builders_love_and_ps():
     assert app._love_plot(_BALANCE) is not None and app._love_plot([]) is None
     assert app._ps_overlap_chart(_LEDGER["ps_overlap"]) is not None
     assert app._ps_overlap_chart(None) is None and app._ps_overlap_chart({"x": 1}) is None
+
+
+# ---- #106: guided-walkthrough sidebar stepper ----
+
+def test_stepper_html_progress_states():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    import theme
+    html = theme.stepper_html(["A", "B", "C"], active=1)
+    assert html.count("class='step") == 3
+    assert "step done" in html and "step active" in html and "step locked" in html
+    assert "✓" in html  # the step before active is checked
+    # the stepper CSS it depends on is present in the theme
+    assert ".step.active .node" in theme.CSS
