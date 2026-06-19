@@ -35,14 +35,21 @@ class DashboardModel(BaseModel):
     calibration: dict = Field(default_factory=dict)        # slope, intercept, coverage, pearson_r, rmse, points
     forest_rows: list[ForestRow] = Field(default_factory=list)
     cards: list[TrialEmulationCard] = Field(default_factory=list)
+    context_summary: dict = Field(default_factory=dict)    # #98 corpus measurability/emulability rollup
 
 
 def build_dashboard(
     comparisons: Iterable["ComparisonResult"],
     *,
     sepsis_ncts: set[str] | None = None,
+    context_records=None,
 ) -> DashboardModel:
-    """Assemble the dashboard model from a comparison stream + the analysis outputs."""
+    """Assemble the dashboard model from a comparison stream + the analysis outputs.
+
+    `context_records` (optional, #98): worker1's TrialDatasetContext sidecar. When
+    given, each card gets a `.why` (joined by (nct_id,dataset)) and the model gets a
+    corpus `context_summary`. Import-light join — no analysis dependency.
+    """
     from tteEngine.analysis.meta import concordance_summary, meta_analyze
     from tteEngine.analysis.reliability import corpus_calibration
 
@@ -61,6 +68,18 @@ def build_dashboard(
             sepsis_pooled = {"estimate": pe.pooled_estimate, "ci_low": pe.ci_low,
                              "ci_high": pe.ci_high, "i2": pe.i2, "k": pe.k}
 
+    cards = build_cards(rows, sepsis_ncts=sepsis)
+    context_summary: dict = {}
+    if context_records is not None:
+        from tteEngine.ui.context_panel import corpus_context_summary, index_context, why_for
+        ctx_recs = list(context_records)
+        idx = index_context(ctx_recs)
+        for card in cards:
+            ctx = idx.get((card.nct_id, card.dataset))
+            if ctx is not None:
+                card.why = why_for(ctx)
+        context_summary = corpus_context_summary(ctx_recs)
+
     from tteEngine.figures.calibration import calibration_points
     return DashboardModel(
         n_total=len(rows),
@@ -76,5 +95,6 @@ def build_dashboard(
                      "coverage": calib.coverage, "pearson_r": calib.pearson_r,
                      "rmse": calib.rmse, "n": calib.n, "points": calibration_points(calib)},
         forest_rows=forest_rows(rows),
-        cards=build_cards(rows, sepsis_ncts=sepsis),
+        cards=cards,
+        context_summary=context_summary,
     )

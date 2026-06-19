@@ -59,6 +59,7 @@ class TrialEmulationCard(BaseModel):
     e_value: float | None = None
     n_treated: int = 0
     n_control: int = 0
+    why: dict | None = None  # WHY-context (#98), joined from worker1's sidecar by (nct_id, dataset)
 
 
 def build_cards(
