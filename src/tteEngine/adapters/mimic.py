@@ -130,6 +130,23 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
         })
         parts.append(out)
 
+    # OUTCOME events (e.g. death) come from admissions.deathtime, not a name-keyed
+    # table, and are NOT clipped to the extraction window — they're post-baseline,
+    # bounded later by the outcome horizon in the cohort builder.
+    outcome_reqs = [r for r in plan.concepts if r.event_type == EventType.OUTCOME]
+    adm = tables.get("admissions")
+    if outcome_reqs and adm is not None and "deathtime" in adm.columns:
+        dead = adm[adm["hadm_id"].astype("int64").isin(hadm_ids) & adm["deathtime"].notna()]
+        if not dead.empty:
+            for req in outcome_reqs:
+                parts.append(pd.DataFrame({
+                    "TRAJECTORY_ID": dead["hadm_id"].astype("int64"),
+                    "TIMESTAMP": pd.to_datetime(dead["deathtime"], utc=True),
+                    "EVENT_TYPE": EventType.OUTCOME.value,
+                    "EVENT_NAME": req.concept,          # e.g. "death"
+                    "EVENT_VALUE": "1",
+                }))
+
     if not parts:
         return _empty_canonical()
     df = pd.concat(parts, ignore_index=True)

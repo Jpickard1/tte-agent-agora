@@ -58,6 +58,28 @@ def test_cohort_filter_excludes_non_matching_admissions():
     assert set(df["TRAJECTORY_ID"]) == {1}       # hadm2 (no sepsis dx) excluded
 
 
+def test_outcome_death_extracted_from_deathtime_unclipped():
+    # death (OUTCOME) comes from admissions.deathtime, not a name-keyed table, and
+    # is NOT clipped to the extraction window (post-baseline, e.g. +200h).
+    tables = _tables()
+    admit = pd.Timestamp("2024-01-01 00:00", tz="UTC")
+    tables["admissions"] = pd.DataFrame({
+        "hadm_id": [1, 2],
+        "admittime": [admit, admit],
+        "deathtime": [admit + pd.Timedelta(hours=200), pd.NaT],   # hadm1 dies; hadm2 survives
+    })
+    plan = ExtractionPlan(
+        nct_id="X", cohort_filter_concepts=["A41"],
+        concepts=[ConceptRequest(concept="death", event_type=EventType.OUTCOME, role="outcome")],
+        window_hours=(-48.0, 24.0),
+    )
+    df = mimic.extract(plan, tables)
+    out = df[df["EVENT_TYPE"] == "outco"]
+    assert list(out["EVENT_NAME"]) == ["death"]          # emitted by concept name
+    assert set(out["TRAJECTORY_ID"]) == {1}              # only the admission with a deathtime
+    validate_canonical(df)
+
+
 def test_concept_and_window_filtering():
     df = mimic.extract(_plan(), _tables())
     # the sepsis diagnosis is captured
