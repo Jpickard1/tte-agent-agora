@@ -34,6 +34,7 @@ import json
 from pathlib import Path
 
 from .context import write_context_sidecar
+from .contracts.audit import dump_audit_jsonl
 from .contracts.io import load_comparisons_jsonl
 from .orchestration.corpus import DropLog, run_corpus_to_jsonl
 from .orchestration.engine_provider import make_engine_provider
@@ -153,9 +154,10 @@ def _write_analysis(comparisons, specs, out, *, datasets, context=True, figures=
 
 
 def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=None, specs=None,
+             measurable_fn=None, arm_match_fn=None,
              out_dir="live_outputs", datasets=DATASETS, max_studies=2000, max_trials=None,
              adjustment="iptw", covariates=None, threshold=0.5, emulable_only=True,
-             lean=True, http_get=None, context=True, figures=True) -> dict:
+             lean=True, http_get=None, context=True, figures=True, audit=True) -> dict:
     """Run the live corpus end-to-end and write the gallery artifacts to out_dir:
     corpus.jsonl, context.jsonl, ledger.jsonl, RESULTS_NARRATIVE.md, drops.jsonl,
     summary.json (+ forest.png). `jobs`/`specs` may be injected (tests / a pre-built
@@ -182,17 +184,29 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
     if plan_fn is None and lean:
         plan_fn = _lean_plan_fn
     drops = DropLog()
+    audits: list = []
     run_kw = {"extract_fn": extract_fn, "engine_fn": engine_fn}
     if compare_fn is not None:
         run_kw["compare_fn"] = compare_fn
     if plan_fn is not None:
         run_kw["plan_fn"] = plan_fn
+    # #131 code-correct matching + #138 measurability-aware eligibility at the cohort seam
+    if measurable_fn is not None:
+        run_kw["measurable_fn"] = measurable_fn
+    if arm_match_fn is not None:
+        run_kw["arm_match_fn"] = arm_match_fn
+    # #143/#130: collect the per-(nct,dataset) AssignmentAudit (tte1 assembles it via
+    # on_audit) so we can persist audit.jsonl for the 'how patients were sorted' panel
+    if audit:
+        run_kw["on_audit"] = audits.append
     n_written, drops = run_corpus_to_jsonl(
         jobs, list(datasets), out / "corpus.jsonl", drops=drops, **run_kw)
 
     comparisons = list(load_comparisons_jsonl(out / "corpus.jsonl"))
     analysis = _write_analysis(comparisons, specs, out, datasets=list(datasets),
                                context=context, figures=figures)
+
+    n_audit = dump_audit_jsonl(audits, out / "audit.jsonl") if audit else 0
 
     (out / "drops.jsonl").write_text(
         "".join(json.dumps(d) + "\n" for d in drops.items))
@@ -204,6 +218,7 @@ def run_live(*, extract_fn, engine_fn=None, compare_fn=None, plan_fn=None, jobs=
         "drops_by_reason": drops.by_reason(),
         "adjustment": adjustment,
         "lean": bool(plan_fn is _lean_plan_fn),
+        "n_audit": n_audit,
         "datasets": list(datasets),
         "catalog": catalog,
         "out_dir": str(out),
