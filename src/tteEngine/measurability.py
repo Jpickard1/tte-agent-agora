@@ -209,8 +209,55 @@ def confounder_measurability(concept: str, event_type: EventType, dataset: str, 
     return out
 
 
+#: EventType -> #109 vocab-index category, for the data-driven code-resolution check.
+_INDEX_CATEGORY = {
+    EventType.DIAGNOSIS: "diagnosis", EventType.LAB: "lab",
+    EventType.MEDICATION: "medication", EventType.MEASUREMENT: "vital",
+}
+
+
+def _index_codes(index: dict, category: str, concept: str) -> int:
+    """# of real codes `concept` resolves to in a #109 index dict (pure: name/code
+    substring, full phrase then alpha tokens). 0 => not present in this dataset."""
+    import re
+    entries = (index or {}).get("categories", {}).get(category, [])
+
+    def hits(term: str) -> set:
+        t = term.lower()
+        return {e["code"] for e in entries if t in e["name"].lower() or t in e["code"].lower()}
+
+    got = hits(concept.lower())
+    if not got:
+        for tok in (t for t in re.split(r"[^a-z0-9]+", concept.lower()) if len(t) >= 4):
+            got |= hits(tok)
+    return len(got)
+
+
+def eligibility_measurable(concept: str, event_type: EventType, dataset: str, *,
+                           index: dict | None = None) -> tuple[bool, str]:
+    """THE #133 eligibility-measurability resolver (LOCKED signature) — tte1's #138
+    `measurable_fn`: is an eligibility criterion truly assessable in `dataset`?
+    Returns (measurable, reason) for an EligibilityDecision{measurable, reason}.
+
+    Without `index`: the event-type heuristic (captured domain -> measurable/proxy).
+    With `index` (a #109 vocab-index dict): DATA-DRIVEN — also requires the concept
+    to resolve to >=1 REAL code in this dataset, so 'measurable' reflects what's
+    actually there, not just the domain. Pure (no pandas)."""
+    status, reason = _classify(concept, event_type, dataset, is_outcome=False)
+    if status == UNMEASURABLE:
+        return False, reason
+    if index is not None:
+        cat = _INDEX_CATEGORY.get(event_type)
+        if cat is not None:  # demographics etc. have no code catalog -> heuristic only
+            n = _index_codes(index, cat, concept)
+            if n == 0:
+                return False, f"'{concept}' resolves to no {event_type.value} codes in {dataset} (not assessable)"
+            return True, f"{n} real {event_type.value} codes in {dataset}"
+    return True, reason   # heuristic: domain captured (measurable or proxy)
+
+
 __all__ = [
     "ElementMeasurability", "DatasetMeasurability", "measurability_report",
-    "build_measurability_catalog", "confounder_measurability",
+    "build_measurability_catalog", "confounder_measurability", "eligibility_measurable",
     "DATASET_DIRECT", "DATASET_PROXY", "MEASURABLE", "PROXY", "UNMEASURABLE",
 ]
