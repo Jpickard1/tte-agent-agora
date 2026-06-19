@@ -92,6 +92,25 @@ def test_build_drug_catalog_scans_codes(tmp_path):
     assert cs.match("001825") is not None      # code from the scanned catalog
 
 
+def test_emit_match_provenance_into_canonical_schema():
+    from tteEngine.contracts.audit import Confidence, MatchProvenance
+    # dx match emits at the icd_hierarchy tier (added to the locked enum) + source_table
+    m = M.condition_codeset("Sepsis").match("A4101")
+    mp = M.to_match_provenance(m, trajectory_id=7, arm="treated", t_rel_hours=2.0,
+                               source_table=M.SOURCE_TABLES[("diagnosis", "MIMIC-IV")])
+    assert isinstance(mp, MatchProvenance)
+    assert mp.method == Confidence.ICD_HIERARCHY and mp.matched_code == "A4101"
+    assert mp.trajectory_id == 7 and mp.arm == "treated" and mp.source_table == "diagnoses_icd"
+
+
+def test_drug_match_emits_ingredient_provenance():
+    from tteEngine.contracts.audit import Confidence
+    cs = M.drug_codeset("hydrocortisone", _mimic_drug_catalog())
+    mp = M.to_match_provenance(cs.match("004250"), trajectory_id=1, arm="steroid")
+    assert mp.method == Confidence.INGREDIENT and mp.concept == "hydrocortisone"
+    assert mp.matched_code == "004250"
+
+
 def run():
     import tempfile
     from pathlib import Path

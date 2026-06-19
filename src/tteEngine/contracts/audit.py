@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field
 class Confidence(str, Enum):
     """How a real event was matched to a trial concept (drug/dx/lab)."""
 
-    RXNORM_CODE = "rxnorm_code"   # matched on a resolved ontology code (highest trust)
+    RXNORM_CODE = "rxnorm_code"   # matched on a resolved drug ontology code (highest trust)
+    ICD_HIERARCHY = "icd_hierarchy"  # dx matched on its ICD code family/hierarchy (= rxnorm_code-trust for conditions)
     INGREDIENT = "ingredient"     # matched at ingredient level (brand/salt/route rolled up)
     NAME = "name"                 # exact normalized name match
     SUBSTRING = "substring"       # last-resort string/substring match (LOW — render amber)
@@ -42,6 +43,7 @@ class MatchProvenance(BaseModel):
     concept: str | None = None                # the trial intervention it matched ('Drug: Hydrocortisone')
     method: Confidence = Confidence.SUBSTRING
     t_rel_hours: float | None = None          # time of the matched event relative to t0
+    source_table: str | None = None           # which source table the match came from (prescriptions/diagnoses_icd/...)
 
 
 class EligibilityDecision(BaseModel):

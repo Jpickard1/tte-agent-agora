@@ -210,9 +210,35 @@ def build_drug_catalog(dataset: str, *, root: str | None = None, chunksize: int 
     return list(seen.values())
 
 
+# --------------------------------------------------------------------------- #
+# Emit into the canonical audit schema (contracts.audit, #140) — no 2nd schema.
+# --------------------------------------------------------------------------- #
+#: (category, dataset) -> source table the match came from (for provenance/UI).
+SOURCE_TABLES = {
+    ("drug", "MIMIC-IV"): "prescriptions", ("drug", "eICU-CRD"): "medication",
+    ("diagnosis", "MIMIC-IV"): "diagnoses_icd", ("diagnosis", "eICU-CRD"): "diagnosis",
+    ("lab", "MIMIC-IV"): "labevents", ("lab", "eICU-CRD"): "lab",
+}
+
+
+def to_match_provenance(match: "CodeMatch", *, trajectory_id: int, arm: str,
+                        t_rel_hours: float | None = None, source_table: str | None = None):
+    """Build a contracts.audit.MatchProvenance (#135/#140) from a matcher CodeMatch
+    + the cohort context (trajectory/arm/time). The matcher supplies code+name+
+    concept+method; the cohort seam supplies trajectory_id/arm/t_rel_hours. One
+    canonical schema — this is the emit point, not a parallel type."""
+    from tteEngine.contracts.audit import Confidence, MatchProvenance
+
+    return MatchProvenance(
+        trajectory_id=int(trajectory_id), arm=arm,
+        matched_event_name=match.name, matched_code=match.code, concept=match.concept,
+        method=Confidence(match.method), t_rel_hours=t_rel_hours, source_table=source_table)
+
+
 __all__ = [
     "RXNORM", "ICD_HIERARCHY", "INGREDIENT", "NAME", "SUBSTRING",
     "TIER_RANK", "LOW_CONFIDENCE", "CodeMatch",
     "IcdCodeSet", "ICD_FAMILIES", "condition_codeset",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
+    "SOURCE_TABLES", "to_match_provenance",
 ]
