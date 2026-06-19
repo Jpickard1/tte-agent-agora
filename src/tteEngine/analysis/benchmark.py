@@ -1,38 +1,53 @@
 """Batch emulated-vs-observed benchmark (#11, probe / lane:analysis).
 
-Runs the comparison (compare.compare_trial) over many trials x datasets and
-aggregates how well the emulations agree with the trials' posted results — the
-system's headline deliverable: "how close is the TTE to the real trial, at scale".
+Aggregates compare.compare_trial rows (contracts.ComparisonResult) over many
+trials x datasets into the system's headline metric — how well the emulations
+agree with the trials' posted results. Designed to SCALE: run_benchmark consumes
+an ITERABLE once and holds only counters (O(#datasets) memory), so it streams
+over a >10k-trial corpus.
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 
+from ..contracts.results import Agreement
 from .compare import compare_trial
+
+_DIRECTIONAL = (Agreement.CONCORDANT, Agreement.DISCORDANT)
 
 
 def run_benchmark(comparisons) -> dict:
-    """Aggregate compare_trial() rows into summary metrics. concordance_rate is
-    over the COMPARABLE rows only (concordant + discordant; excludes inconclusive
-    / not-comparable, which carry no direction)."""
-    rows = list(comparisons)
-    verdicts = Counter(c.get("verdict") for c in rows)
-    comparable = [c for c in rows if c.get("verdict") in ("concordant", "discordant")]
-    rate = (sum(c["verdict"] == "concordant" for c in comparable) / len(comparable)
-            if comparable else None)
+    """Aggregate an iterable of ComparisonResult -> summary metrics.
+
+    `concordance_rate` is over the COMPARABLE rows only (concordant + discordant;
+    excludes inconclusive, which carries no direction). Streams: pass a generator
+    of millions of rows and only counters are retained.
+    """
+    by_agreement: Counter = Counter()
+    by_dataset: dict[str, Counter] = defaultdict(Counter)
+    n = comparable = concordant = 0
+    for c in comparisons:
+        n += 1
+        by_agreement[c.agreement] += 1
+        by_dataset[c.dataset][c.agreement] += 1
+        if c.agreement in _DIRECTIONAL:
+            comparable += 1
+            concordant += int(c.agreement == Agreement.CONCORDANT)
     return {
-        "n": len(rows),
-        "by_verdict": dict(verdicts),
-        "n_comparable": len(comparable),
-        "concordance_rate": rate,
+        "n": n,
+        "by_agreement": {a.value: by_agreement[a] for a in Agreement if by_agreement[a]},
+        "by_dataset": {ds: {a.value: cc[a] for a in Agreement if cc[a]}
+                       for ds, cc in by_dataset.items()},
+        "n_comparable": comparable,
+        "concordance_rate": (concordant / comparable) if comparable else None,
     }
 
 
-def benchmark_trials(items) -> tuple[list[dict], dict]:
-    """Run the benchmark over an iterable of (study, tte_result, treatment_hint,
-    dataset) tuples. Returns (per-trial rows, summary). One row per trial x DB."""
-    rows = [
-        compare_trial(study, tte_result, treatment_hint=hint, dataset=dataset)
-        for (study, tte_result, hint, dataset) in items
-    ]
+def benchmark_trials(items) -> tuple[list, dict]:
+    """Run the benchmark over an iterable of (study, emulated_TTEResult,
+    treatment_hint, dataset). Returns (rows, summary), one row per trial x DB.
+    For a very large corpus, stream compare_trial(...) straight into
+    run_benchmark instead of materializing rows here."""
+    rows = [compare_trial(study, emulated, treatment_hint=hint, dataset=dataset)
+            for (study, emulated, hint, dataset) in items]
     return rows, run_benchmark(rows)
