@@ -69,7 +69,7 @@ def _read_filtered(path: str, *, usecols, keep, dtype=None, chunksize: int = _CH
 # --------------------------------------------------------------------------- #
 def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
                resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None,
-               drug_matcher: dict | None = None) -> dict:
+               drug_matcher: dict | None = None, dx_matcher: dict | None = None) -> dict:
     """Load the plan-targeted MIMIC-IV tables for adapters.mimic.extract.
 
     `prepass` (optional #124 Prepass): when given, labevents/chartevents come from
@@ -95,14 +95,25 @@ def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
     want_dx = cohort_codes | _names_for(plan, EventType.DIAGNOSIS, resolve)
 
     cohort_hadm = all_hadm
-    if want_dx:
+    if want_dx or dx_matcher:
         dx = pd.read_csv(f"{hosp}/diagnoses_icd.csv.gz", usecols=["hadm_id", "icd_code"],
                          dtype={"icd_code": str})
-        dx = dx[dx["icd_code"].astype(str).isin(want_dx)].copy()
+        icd = dx["icd_code"].astype(str)
+        keep = icd.isin(want_dx)
+        fam_mask = pd.Series(False, index=dx.index)        # #132 ICD-family rows
+        for cs in (dx_matcher or {}).values():
+            fam_mask = fam_mask | cs.mask(icd)
+        dx = dx[keep | fam_mask].copy()
         dx["charttime"] = dx["hadm_id"].astype("int64").map(admit_by_hadm)  # no native dx time
         tables["diagnoses_icd"] = dx
-        if cohort_codes:
-            cohort_hadm = set(dx[dx["icd_code"].isin(cohort_codes)]["hadm_id"].astype("int64"))
+        # cohort = family matches (if any) OR the resolved cohort codes
+        if dx_matcher or cohort_codes:
+            cm = pd.Series(False, index=dx.index)
+            for cs in (dx_matcher or {}).values():
+                cm = cm | cs.mask(dx["icd_code"].astype(str))
+            if cohort_codes:
+                cm = cm | dx["icd_code"].astype(str).isin(cohort_codes)
+            cohort_hadm = set(dx[cm]["hadm_id"].astype("int64"))
 
     # labs/measurements: from the shared pre-pass (sliced, no rescan) if given, else
     # the per-trial filtered scan.
@@ -169,13 +180,14 @@ _EICU_VITAL_FILES = {"vitalperiodic": "vitalPeriodic.csv.gz", "vitalaperiodic": 
 
 def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
               resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None,
-              drug_matcher: dict | None = None) -> dict:
+              drug_matcher: dict | None = None, dx_matcher: dict | None = None) -> dict:
     """Load the plan-targeted eICU-CRD tables for adapters.eicu.extract.
 
     `prepass` (optional #124 Prepass): lab/vitalperiodic come from the shared
     pre-pass sliced to this cohort (no per-trial rescan) when supplied.
     `drug_matcher` (optional #131): medication loaded by CODE (drughiclseqno in the
-    matcher's code union) rather than by drug name, for the adapter's code-match."""
+    matcher's code union) rather than by drug name. `dx_matcher` (#132): diagnoses
+    prefetched by ICD family (hierarchy) too, so the adapter's family match sees them."""
     resolve = resolve or _identity
     types = {c.event_type for c in plan.concepts}
     tables: dict[str, pd.DataFrame] = {}
@@ -193,20 +205,28 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
     want_dx = cohort_codes | _names_for(plan, EventType.DIAGNOSIS, resolve)
 
     cohort_stays = all_stays
-    if want_dx or plan.cohort_filter_concepts:
+    if want_dx or dx_matcher or plan.cohort_filter_concepts:
         dx = pd.read_csv(f"{root}/diagnosis.csv.gz",
                          usecols=["patientunitstayid", "diagnosisoffset", "icd9code", "diagnosisstring"],
                          dtype={"icd9code": str})
-        if want_dx:
-            # eICU icd9code can pack several codes ("A41.9, 995.92") -> keep a row if
-            # ANY requested code is a substring (liberal prefetch; extract re-matches).
+        icd = dx["icd9code"].astype(str)
+        fams = list((dx_matcher or {}).values())
+        if want_dx or fams:
             codes = list(want_dx)
-            dx = dx[dx["icd9code"].astype(str).apply(lambda s: any(k in s for k in codes))].copy()
+            # keep a row if ANY code token substring-matches want_dx OR is in a #132 ICD family
+            keep = icd.apply(lambda s: any(k in s for k in codes)) if codes else pd.Series(False, index=dx.index)
+            for cs in fams:
+                keep = keep | icd.map(cs.matches_any)
+            dx = dx[keep].copy()
         tables["diagnosis"] = dx
-        if cohort_codes:
-            cc = list(cohort_codes)
-            cohort_stays = set(dx[dx["icd9code"].astype(str).apply(
-                lambda s: any(k in s for k in cc))]["patientunitstayid"].astype("int64"))
+        if dx_matcher or cohort_codes:
+            cm = pd.Series(False, index=dx.index)
+            for cs in fams:
+                cm = cm | dx["icd9code"].astype(str).map(cs.matches_any)
+            if cohort_codes:
+                cc = list(cohort_codes)
+                cm = cm | dx["icd9code"].astype(str).apply(lambda s: any(k in s for k in cc))
+            cohort_stays = set(dx[cm]["patientunitstayid"].astype("int64"))
 
     pp_tables = prepass.slice(cohort_stays) if prepass is not None else {}
 
@@ -299,7 +319,8 @@ def _enrich_vocab_from_index(plan: ExtractionPlan, index: dict) -> None:
 def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT,
                     eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK,
                     use_vocab_index: bool = True, index_cache_dir=None, prepasses=None,
-                    use_drug_codes: bool = True, drug_catalog_cache=None):
+                    use_drug_codes: bool = True, drug_catalog_cache=None,
+                    use_dx_codes: bool = True):
     """Return the `extract_fn(plan, spec, dataset) -> canonical 5-col DataFrame |
     None` that probe's #102 run_corpus consumes: load the plan-targeted real tables
     for `dataset` and run the matching adapter.
@@ -340,6 +361,15 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
         except Exception:
             return None  # degrade to name matching
 
+    def _dx(plan):
+        if not use_dx_codes:
+            return None
+        from tteEngine.contracts.events import EventType
+        from tteEngine.matching import build_dx_matcher
+        concepts = list(plan.cohort_filter_concepts) + [
+            c.concept for c in plan.concepts if c.event_type == EventType.DIAGNOSIS]
+        return build_dx_matcher(concepts) or None
+
     def extract_fn(plan, spec, dataset):
         if allowed is not None and dataset not in allowed:
             return None
@@ -348,14 +378,17 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
             _enrich_vocab_from_index(plan, idx)   # data-driven codes for this trial
         pp = (prepasses or {}).get(dataset)       # #124 shared pre-pass (full mode), if supplied
         dm = _matcher(spec, dataset)              # #131 code-based med matcher, if enabled
+        dxm = _dx(plan)                           # #132 ICD-family cohort/dx matcher
         if dataset == "MIMIC-IV":
             df = mimic.extract(plan, load_mimic(plan, root=mimic_root, resolve=_resolve,
-                                                chunksize=chunksize, prepass=pp, drug_matcher=dm),
-                               resolve=_resolve, drug_matcher=dm)
+                                                chunksize=chunksize, prepass=pp, drug_matcher=dm,
+                                                dx_matcher=dxm),
+                               resolve=_resolve, drug_matcher=dm, dx_matcher=dxm)
         elif dataset == "eICU-CRD":
             df = eicu.extract(plan, load_eicu(plan, root=eicu_root, resolve=_resolve,
-                                              chunksize=chunksize, prepass=pp, drug_matcher=dm),
-                              resolve=_resolve, drug_matcher=dm)
+                                              chunksize=chunksize, prepass=pp, drug_matcher=dm,
+                                              dx_matcher=dxm),
+                              resolve=_resolve, drug_matcher=dm, dx_matcher=dxm)
         else:
             return None  # MGB is human-gated (#8); unknown datasets unsupported
         return df if df is not None and not df.empty else None

@@ -151,15 +151,20 @@ def test_make_extract_fn_autowires_vocab_index(tmp_path):
         concepts=[ConceptRequest(concept="Sepsis", event_type=EventType.DIAGNOSIS, role="eligibility"),
                   ConceptRequest(concept="death", event_type=EventType.OUTCOME, role="outcome")],
         window_hours=(-48.0, 24.0))
-    # curated vocab has no 'Sepsis' concept -> empty (reproduces the empty live run)
-    curated = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root), use_vocab_index=False)
+    # with NO resolution path (no index, no dx-family) curated vocab can't resolve
+    # 'Sepsis' -> empty (the original empty-live-run case)
+    curated = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root),
+                                          use_vocab_index=False, use_dx_codes=False)
     assert curated(plan, None, "MIMIC-IV") is None
     # index auto-wire -> 'Sepsis' resolves to the real code (99592) -> non-empty cohort
-    wired = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root),
+    wired = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root), use_dx_codes=False,
                                         use_vocab_index=True, index_cache_dir=str(tmp_path / "vi"))
     df = wired(plan, None, "MIMIC-IV")
     assert df is not None and 1 in set(df["TRAJECTORY_ID"])
     assert {"diagn", "outco"} <= set(df["EVENT_TYPE"])         # cohort + death, non-empty
+    # #132: the ICD-family dx matcher ALONE (no index) also resolves 'Sepsis' (99592 in family)
+    fam = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root), use_vocab_index=False)
+    assert fam(plan, None, "MIMIC-IV") is not None
 
 
 def run():

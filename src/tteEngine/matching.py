@@ -79,6 +79,21 @@ class IcdCodeSet:
                              concept=self.concept)
         return None
 
+    def matches_any(self, value: str) -> bool:
+        """True if ANY comma/semicolon-separated code token is in the family — for
+        eICU's multi-code icd9code field ('995.92, A41.9') as well as single codes."""
+        return any(self.match(tok) is not None
+                   for tok in str(value).replace(";", ",").split(","))
+
+    def mask(self, series) -> "pd.Series":
+        """Vectorized family membership over an icd_code Series (single-code, e.g.
+        MIMIC diagnoses_icd) — for the loader's cheap prefix prefilter."""
+        norm = series.astype(str).str.replace(r"[^A-Za-z0-9]", "", regex=True).str.upper()
+        m = norm.isin(self.exact)
+        if self.prefixes:
+            m = m | norm.str.startswith(self.prefixes)
+        return m
+
 
 #: condition keyword -> ICD family (ICD-10 prefixes + ICD-9 prefixes/explicit).
 #: 'sepsis': A40*/A41* (sepsis), R652* (severe sepsis +/- shock), 038* (ICD-9
@@ -100,6 +115,20 @@ def condition_codeset(condition: str) -> IcdCodeSet | None:
     if "sepsis" in c or "septic" in c or "septicaemia" in c or "septicemia" in c:
         return ICD_FAMILIES["sepsis"]
     return ICD_FAMILIES.get(c)
+
+
+def build_dx_matcher(concepts) -> dict:
+    """#132 cohort/diagnosis matcher {concept: IcdCodeSet} for the cohort-defining
+    + dx-eligibility concepts that map to a curated ICD family. Concepts without a
+    family are absent -> the adapter falls back to the resolved (#109) codes."""
+    out: dict[str, IcdCodeSet] = {}
+    for c in concepts:
+        if not c:
+            continue
+        cs = condition_codeset(c)
+        if cs is not None:
+            out[c] = cs
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +350,7 @@ def assign_med_concepts(df, code_fields, drug_matcher: dict):
 __all__ = [
     "RXNORM", "ICD_HIERARCHY", "INGREDIENT", "NAME", "SUBSTRING",
     "TIER_RANK", "LOW_CONFIDENCE", "CodeMatch",
-    "IcdCodeSet", "ICD_FAMILIES", "condition_codeset",
+    "IcdCodeSet", "ICD_FAMILIES", "condition_codeset", "build_dx_matcher",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
     "DRUG_CODE_FIELDS", "build_drug_matcher", "DRUG_CATALOG_CACHE",
     "SOURCE_TABLES", "to_match_provenance", "med_event_value",

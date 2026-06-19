@@ -58,20 +58,32 @@ def _empty_canonical() -> pd.DataFrame:
 
 
 def _cohort_hadm_ids(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
-                     resolve: Resolver) -> set[int]:
+                     resolve: Resolver, dx_matcher: dict | None = None) -> set[int]:
     """hadm_ids in-cohort = those with a diagnosis matching any cohort-filter
-    concept. Empty filter -> every admission (from the `admissions` table)."""
+    concept. Empty filter -> every admission (from the `admissions` table).
+
+    #132: when `dx_matcher` has an ICD family for a cohort concept, membership is
+    decided by the ICD HIERARCHY on icd_code (A40*/A41*/R652*/...), else by the
+    resolved (#109) codes."""
     if not plan.cohort_filter_concepts:
         adm = tables.get("admissions")
         return set(adm["hadm_id"].astype("int64")) if adm is not None else set()
-    codes: set[str] = set()
-    for c in plan.cohort_filter_concepts:
-        codes |= resolve(c)
     dx = tables.get("diagnoses_icd")
     if dx is None or dx.empty:
         return set()
-    hit = dx[dx["icd_code"].astype(str).isin(codes)]
-    return set(hit["hadm_id"].astype("int64"))
+    icd = dx["icd_code"].astype(str)
+    import pandas as pd
+    mask = pd.Series(False, index=dx.index)
+    fam_codes: set[str] = set()
+    for c in plan.cohort_filter_concepts:
+        cs = (dx_matcher or {}).get(c)
+        if cs is not None:
+            mask = mask | cs.mask(icd)            # ICD-family (hierarchy) match
+        else:
+            fam_codes |= set(resolve(c))          # fallback: resolved enumerated codes
+    if fam_codes:
+        mask = mask | icd.isin(fam_codes)
+    return set(dx[mask]["hadm_id"].astype("int64"))
 
 
 def _anchor_times(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
@@ -86,15 +98,18 @@ def _anchor_times(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
 
 
 def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
-            resolve: Resolver | None = None, drug_matcher: dict | None = None) -> pd.DataFrame:
+            resolve: Resolver | None = None, drug_matcher: dict | None = None,
+            dx_matcher: dict | None = None) -> pd.DataFrame:
     """Build the canonical 5-col stream for `plan` from the given MIMIC `tables`.
 
     `tables` keys are MIMIC table names (admissions, diagnoses_icd, labevents,
     chartevents, prescriptions, ...); only those needed by the plan are touched.
+    `dx_matcher` (#132): {concept: IcdCodeSet} -> diagnosis cohort/eligibility match
+    by ICD FAMILY (hierarchy) instead of name. `drug_matcher` (#131): meds by code.
     Returns a DataFrame that passes ``validate_canonical``.
     """
     resolve = resolve or _identity_resolver
-    hadm_ids = _cohort_hadm_ids(plan, tables, resolve)
+    hadm_ids = _cohort_hadm_ids(plan, tables, resolve, dx_matcher)
     if not hadm_ids:
         return _empty_canonical()
     anchors = _anchor_times(plan, tables, hadm_ids)
@@ -112,9 +127,13 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
         src = tables.get(spec["table"])
         if src is None or src.empty:
             continue
-        codes = resolve(req.concept)
-        rows = src[src["hadm_id"].astype("int64").isin(hadm_ids)
-                   & src[spec["name"]].astype(str).isin(codes)].copy()
+        in_cohort = src["hadm_id"].astype("int64").isin(hadm_ids)
+        dx_fam = (dx_matcher or {}).get(req.concept) if req.event_type == EventType.DIAGNOSIS else None
+        if dx_fam is not None:                          # #132: ICD-family match on icd_code
+            name_match = dx_fam.mask(src[spec["name"]].astype(str))
+        else:
+            name_match = src[spec["name"]].astype(str).isin(resolve(req.concept))
+        rows = src[in_cohort & name_match].copy()
         if rows.empty:
             continue
         rows["__ts"] = pd.to_datetime(rows[spec["time"]], utc=True)
