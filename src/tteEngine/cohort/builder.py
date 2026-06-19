@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from tteEngine.common_format import Aggregation, FeatureSpec, materialize_wide, validate_canonical
-from tteEngine.contracts.cohort import ArmAssignment, CohortResult
+from tteEngine.contracts.cohort import ArmAssignment, CohortDiagnostics, CohortResult
 from tteEngine.contracts.events import EventType
 from tteEngine.contracts.trial_spec import Comparator, EligibilityCriterion, TargetTrialSpec
 
@@ -128,6 +128,40 @@ def _assign_arm(traj_events: "pd.DataFrame", spec: TargetTrialSpec, t0, resolve)
     return control.name if control else "control"
 
 
+def _outcome_before_landmark(traj_events, spec, t0, landmark_hours, resolve) -> bool:
+    """True if a trial outcome occurs in [t0, t0+landmark): the patient leaves
+    before reaching the landmark, so including them would create immortal time."""
+    for outcome in spec.outcomes:
+        sub = traj_events[traj_events["EVENT_TYPE"] == outcome.event_type.value]
+        if outcome.concept is not None:
+            names = sub["EVENT_NAME"]
+            mask = names == outcome.concept
+            if resolve is not _identity:
+                mask = mask | (names.map(resolve) == outcome.concept)
+            sub = sub[mask]
+        if len(sub) == 0:
+            continue
+        rel = (sub["TIMESTAMP"] - t0).dt.total_seconds() / 3600.0
+        if bool(((rel >= 0) & (rel < landmark_hours)).any()):
+            return True
+    return False
+
+
+def _leakage_warnings(spec) -> list[str]:
+    """Flag eligibility criteria assessed with POST-t0 data (window upper bound
+    > 0) -- a classic look-ahead / immortal-time leak; eligibility should be
+    determinable at or before time-zero."""
+    warns = []
+    for c in spec.eligibility:
+        w = c.window_hours
+        if w is not None and w[1] > 0:
+            warns.append(
+                f"eligibility '{c.concept or c.event_type.value}' uses a post-t0 window "
+                f"(up to +{w[1]}h): assess at/before t0 to avoid look-ahead leakage."
+            )
+    return warns
+
+
 def build_cohort(
     events: "pd.DataFrame",
     spec: TargetTrialSpec,
@@ -135,27 +169,40 @@ def build_cohort(
     dataset: str,
     validate: bool = True,
     resolve=None,
+    enforce_landmark: bool = True,
+    landmark_hours: float | None = None,
 ) -> CohortResult:
-    """Build the emulated-trial cohort. Returns CohortResult (arms + index_times).
+    """Build the emulated-trial cohort with explicit, immortal-time-safe time-zero.
 
-    `resolve` (optional, #5<->#9): an EVENT_NAME->concept mapping (e.g.
-    vocab.classify) so real adapter streams that emit RAW codes (ICD 'A41') match
-    concept-level eligibility/arms ('sepsis'). Injected (not a hard #5 import) so
-    builder stays import-light; default identity -> concept-name streams unchanged.
+    t0 = the landmark anchor (spec.time_zero.anchor); treatment status is assessed
+    over the grace window (t0, t0+grace], and follow-up conceptually starts at the
+    landmark t0+`landmark_hours` (default = grace). IMMORTAL-TIME GUARD (#30): when
+    `enforce_landmark`, trajectories whose trial outcome occurs before the landmark
+    are EXCLUDED (they could not have survived to be assigned) and counted in
+    diagnostics -- never silent. Post-t0 eligibility windows are flagged too.
+
+    `resolve` (#5<->#9): EVENT_NAME->concept mapping for raw-coded streams; default
+    identity leaves concept-name streams unchanged.
     """
     if validate:
         validate_canonical(events)
     _resolve = resolve or _identity
+    landmark = landmark_hours if landmark_hours is not None else spec.time_zero.grace_window_hours
 
     t0_all = _index_times(events, spec)
     arms: dict[str, list[int]] = {}
     index_times: dict[int, object] = {}
     by_id = {int(tid): g for tid, g in events.groupby("TRAJECTORY_ID", sort=True)}
 
+    n_eligible = n_excluded_immortal = 0
     for tid in sorted(by_id):
         t0 = t0_all[tid]
         traj = by_id[tid]
         if not _is_eligible(traj, spec, t0, _resolve):
+            continue
+        n_eligible += 1
+        if enforce_landmark and _outcome_before_landmark(traj, spec, t0, landmark, _resolve):
+            n_excluded_immortal += 1
             continue
         arm_name = _assign_arm(traj, spec, t0, _resolve)
         arms.setdefault(arm_name, []).append(tid)
@@ -166,12 +213,17 @@ def build_cohort(
         ArmAssignment(name=name, is_control=(name in control_names), trajectory_ids=sorted(ids))
         for name, ids in sorted(arms.items())
     ]
+    n_total = sum(len(ids) for ids in arms.values())
+    diagnostics = CohortDiagnostics(
+        n_screened=len(by_id), n_eligible=n_eligible,
+        n_excluded_immortal=n_excluded_immortal, n_enrolled=n_total,
+        anchor=spec.time_zero.anchor, grace_window_hours=spec.time_zero.grace_window_hours,
+        landmark_hours=landmark, arm_sizes={a.name: len(a.trajectory_ids) for a in arm_objs},
+        leakage_warnings=_leakage_warnings(spec),
+    )
     return CohortResult(
-        nct_id=spec.nct_id,
-        dataset=dataset,
-        arms=arm_objs,
-        index_times=index_times,
-        n_total=sum(len(ids) for ids in arms.values()),
+        nct_id=spec.nct_id, dataset=dataset, arms=arm_objs, index_times=index_times,
+        n_total=n_total, diagnostics=diagnostics,
     )
 
 

@@ -20,6 +20,21 @@ class ArmAssignment(BaseModel):
     trajectory_ids: list[int] = Field(default_factory=list)
 
 
+class CohortDiagnostics(BaseModel):
+    """Time-zero + immortal-time + attrition diagnostics (#30). Makes the
+    landmark explicit and records every exclusion (no silent attrition)."""
+
+    n_screened: int = 0
+    n_eligible: int = 0
+    n_excluded_immortal: int = 0
+    n_enrolled: int = 0
+    anchor: str = ""
+    grace_window_hours: float = 0.0
+    landmark_hours: float = 0.0
+    arm_sizes: dict[str, int] = Field(default_factory=dict)
+    leakage_warnings: list[str] = Field(default_factory=list)
+
+
 class CohortResult(BaseModel):
     nct_id: str
     dataset: str
@@ -32,6 +47,7 @@ class CohortResult(BaseModel):
     )
     feature_columns: list[str] = Field(default_factory=list)
     n_total: int = 0
+    diagnostics: "CohortDiagnostics | None" = None
 
     def n_by_arm(self) -> dict[str, int]:
         return {a.name: len(a.trajectory_ids) for a in self.arms}
