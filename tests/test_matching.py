@@ -150,3 +150,41 @@ def run():
 if __name__ == "__main__":
     import sys
     sys.exit(0 if run() else 1)
+
+
+# --- #131 fix: ctgov 'Drug: ' prefix + ingredient synonyms (probe's blocker) ---
+
+def _metabolic_catalog():
+    # real-MIMIC-shaped names (probe: catalog is healthy; resolution was the bug)
+    return [{"name": "Thiamine", "gsn": "004321", "ndc": "n1"},
+            {"name": "Hydrocortisone Na Succ", "gsn": "004250", "ndc": "n2"},
+            {"name": "Ascorbic Acid", "gsn": "001122", "ndc": "n3"},
+            {"name": "Furosemide", "gsn": "008209", "ndc": "n4"}]
+
+
+def test_drug_prefix_stripped_resolves_codes():
+    # 'Drug: Thiamine' must resolve to the catalog 'Thiamine' (was 0 -> regression)
+    assert M.drug_codeset("Drug: Thiamine", _metabolic_catalog()).match("004321") is not None
+    assert M.drug_codeset("Drug: Hydrocortisone", _metabolic_catalog()).match("004250") is not None
+
+
+def test_vitamin_c_synonym_to_ascorbic():
+    cs = M.drug_codeset("Drug: Vitamin C", _metabolic_catalog())
+    assert cs.match("001122") is not None      # Vitamin C -> Ascorbic Acid
+
+
+def test_clean_intervention_strips_type_prefix():
+    assert M.clean_intervention("Drug: Thiamine") == "thiamine"
+    assert M.clean_intervention("Biological: Anakinra") == "anakinra"
+    assert M.clean_intervention("Hydrocortisone") == "hydrocortisone"
+
+
+def test_build_drug_matcher_with_ctgov_prefixed_arms():
+    from tteEngine.contracts.trial_spec import Arm, TargetTrialSpec
+    spec = TargetTrialSpec(nct_id="NCT03509350", arms=[
+        Arm(name="HAT", intervention_concepts=["Drug: Thiamine", "Drug: Hydrocortisone", "Drug: Vitamin C"]),
+        Arm(name="placebo", is_control=True)])
+    m = M.build_drug_matcher(spec, "MIMIC-IV", catalog=_metabolic_catalog())
+    # every drug arm concept now resolves >=1 code (the blocker was all-zero)
+    assert all(len(cs.codes) >= 1 for c, cs in m.items())
+    assert m["Drug: Thiamine"].match("004321") is not None

@@ -148,6 +148,9 @@ DRUG_INGREDIENTS: dict[str, set[str]] = {
     "corticosteroid": {"hydrocortisone", "solu-cortef", "cortef", "methylprednisolone",
                        "solu-medrol", "medrol", "dexamethasone", "decadron", "prednisone",
                        "prednisolone", "fludrocortisone", "florinef"},
+    "thiamine": {"thiamine"},   # NOT 'vitamin b1' — substring-hits 'Vitamin B12-...' (B1 in B12)
+    "vitamin c": {"ascorbic acid", "ascorbic", "vitamin c"},
+    "ascorbic acid": {"ascorbic acid", "ascorbic", "vitamin c"},
     "norepinephrine": {"norepinephrine", "levophed", "noradrenaline"},
     "epinephrine": {"epinephrine", "adrenaline"},
     "vasopressin": {"vasopressin", "pitressin", "argipressin"},
@@ -187,6 +190,20 @@ def _norm_code(code) -> str:
     return re.sub(r"\s+", "", str(code)).upper().lstrip("0") or "0"
 
 
+#: ctgov prefixes interventions by type ('Drug: Thiamine', 'Biological: ...'). Strip
+#: it (+ case-fold) before the ingredient lookup, else 'Drug: Thiamine' never
+#: matches the catalog 'Thiamine' — the bug that zeroed every drug arm.
+_INTERVENTION_PREFIX = re.compile(
+    r"^\s*(drug|device|biological|procedure|dietary\s*supplement|combination\s*product|"
+    r"radiation|behavioral|genetic|diagnostic\s*test|other)\s*:\s*", re.I)
+
+
+def clean_intervention(concept: str) -> str:
+    """Strip the ctgov intervention-type prefix + case-fold ('Drug: Thiamine' ->
+    'thiamine') for ingredient lookup."""
+    return _INTERVENTION_PREFIX.sub("", str(concept or "")).strip().lower()
+
+
 def drug_codeset(concept: str, drug_catalog: list[dict], *, code_fields=("gsn", "ndc"),
                  exclude_wrong_route: bool = True) -> DrugCodeSet:
     """Resolve a drug concept to its CODE SET from a dataset's drug catalog
@@ -194,8 +211,13 @@ def drug_codeset(concept: str, drug_catalog: list[dict], *, code_fields=("gsn", 
     one of the concept's ingredient/synonym terms; its codes are added with method
     'ingredient'. The set is built once (reviewable); patients then match by CODE.
 
-    `code_fields`: ('gsn','ndc') for MIMIC, ('drughiclseqno',) for eICU."""
-    ingredients = DRUG_INGREDIENTS.get(concept.lower(), {concept.lower()})
+    `code_fields`: ('gsn','ndc') for MIMIC, ('drughiclseqno',) for eICU.
+
+    The concept's ctgov intervention-type prefix ('Drug: Thiamine' -> 'thiamine')
+    is stripped + case-folded before the ingredient lookup; the DrugCodeSet keeps
+    the RAW concept (so EVENT_NAME=concept still matches arm.intervention_concepts)."""
+    clean = clean_intervention(concept)
+    ingredients = DRUG_INGREDIENTS.get(clean, {clean})
     out = DrugCodeSet(concept=concept)
     for row in drug_catalog:
         name = str(row.get("name", "")).lower()
@@ -398,6 +420,7 @@ __all__ = [
     "TIER_RANK", "LOW_CONFIDENCE", "CodeMatch",
     "IcdCodeSet", "ICD_FAMILIES", "condition_codeset", "build_dx_matcher",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
+    "clean_intervention",
     "DRUG_CODE_FIELDS", "build_drug_matcher", "DRUG_CATALOG_CACHE",
     "LAB_SYNONYMS", "build_lab_matcher", "DEMOGRAPHIC_CONCEPTS", "is_demographic",
     "SOURCE_TABLES", "to_match_provenance", "med_event_value",
