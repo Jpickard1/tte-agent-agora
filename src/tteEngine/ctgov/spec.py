@@ -114,12 +114,17 @@ def _eligibility(study: dict) -> list[EligibilityCriterion]:
     return crit
 
 
-def study_to_spec(study: dict) -> TargetTrialSpec:
-    """Parse a ctgov study dict (from the #1 reader) into a TargetTrialSpec."""
+def study_to_spec(study: dict, *, enrich_eligibility: bool = False, classify=None) -> TargetTrialSpec:
+    """Parse a ctgov study dict (from the #1 reader) into a TargetTrialSpec.
+
+    enrich_eligibility=True upgrades the demographics-only eligibility with #28's
+    free-text inclusion/exclusion predicates (more emulable trials -> maximize
+    count); `classify` is the vocab resolver passed through so EVENT_NAME->concept
+    matching works on real raw-coded streams. Opt-in to keep the base parse light."""
     ps = _ps(study)
     ident = ps.get("identificationModule", {})
     conds = ps.get("conditionsModule", {}).get("conditions", []) or []
-    return TargetTrialSpec(
+    spec = TargetTrialSpec(
         nct_id=ident.get("nctId", ""),
         title=ident.get("briefTitle") or ident.get("officialTitle"),
         condition=conds[0] if conds else None,
@@ -129,3 +134,7 @@ def study_to_spec(study: dict) -> TargetTrialSpec:
         time_zero=TimeZeroRule(),
         estimand=Estimand.INTENTION_TO_TREAT,
     )
+    if enrich_eligibility:
+        from .eligibility import enrich_spec_eligibility
+        enrich_spec_eligibility(spec, study, classify=classify)
+    return spec
