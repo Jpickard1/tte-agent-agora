@@ -30,6 +30,7 @@ from .trial_spec import (
     TimeZeroRule,
 )
 from .results import Agreement, ComparisonResult, EffectMeasure, TTEResult
+from .io import dump_comparisons_jsonl, load_comparisons_jsonl
 
 __all__ = [
     "CANONICAL_COLUMNS",
@@ -52,4 +53,6 @@ __all__ = [
     "ComparisonResult",
     "EffectMeasure",
     "Agreement",
+    "dump_comparisons_jsonl",
+    "load_comparisons_jsonl",
 ]
