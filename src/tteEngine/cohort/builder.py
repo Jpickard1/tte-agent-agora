@@ -180,11 +180,40 @@ def _leakage_warnings(spec) -> list[str]:
     return warns
 
 
-def _assign_with_prov(traj_events, spec, t0, resolve, arm_match_fn):
-    """Like _assign_arm, but returns (arm_name, provenance|None). provenance is a
-    MatchProvenance-shaped dict for the matched treatment event. With arm_match_fn
-    (worker1's code matcher) it records the matched code + method; the default is the
-    normalized-substring fallback (method='substring', low confidence)."""
+def _component_match(name, concept, resolve, arm_match_fn):
+    """Does med `name` match a SINGLE intervention component `concept`?
+    -> (ok, code, method). With arm_match_fn (worker1's code matcher) the concept is
+    matched by code; the default is exact/resolved-name then normalized-substring (LOW)."""
+    if arm_match_fn is not None:
+        res = arm_match_fn(name, [concept])  # one-concept set -> per-component coverage
+        return bool(res[0]), (res[1] if len(res) > 1 else None), (res[2] if len(res) > 2 else "name")
+    n, cn = _norm_drug(name), _norm_drug(concept)
+    if "placebo" in n:
+        return False, None, "substring"
+    if name == concept or n == cn:
+        return True, None, "name"                         # exact (raw or normalized)
+    if resolve is not _identity and resolve(name) == concept:
+        return True, None, "name"                         # vocab-resolved (#5)
+    if len(cn) >= 3 and (cn in n or n in cn):
+        return True, None, "substring"                    # last-resort substring (LOW)
+    return False, None, "substring"
+
+
+def _assign_with_prov(traj_events, spec, t0, resolve, arm_match_fn, arm_strategy=None):
+    """Return (arm_name, provenance|None). Assigns to the first treatment arm the
+    trajectory satisfies under that arm's TREATMENT STRATEGY (#162):
+
+      * 'any'  -> treated if ANY intervention component is administered in-window
+                  (single-drug or alternative-of arms);
+      * 'all'  -> PER-PROTOCOL combination: treated only if EVERY component is
+                  co-administered in (t0, t0+grace] (e.g. HAT = vit C + thiamine +
+                  hydrocortisone). Matching one routine component (banana-bag thiamine)
+                  no longer flips a patient to 'treated', so the control arm survives.
+
+    `arm_strategy` overrides every arm's own `strategy` when given (so a run can force
+    per-protocol matching across a combo-heavy corpus). provenance is a MatchProvenance-
+    shaped dict for the protocol-defining event; for 'all' it marks protocol COMPLETION
+    (the last required component) and reports the weakest match tier across components."""
     grace = spec.time_zero.grace_window_hours
     treatment_arms = [a for a in spec.arms if not a.is_control]
     control = next((a for a in spec.arms if a.is_control), None)
@@ -192,32 +221,29 @@ def _assign_with_prov(traj_events, spec, t0, resolve, arm_match_fn):
     meds = _window_mask(meds, t0, (0.0, grace)).sort_values("TIMESTAMP")
     for arm in treatment_arms:
         concepts = arm.intervention_concepts
-        concepts_norm = [c for c in (_norm_drug(x) for x in concepts) if len(c) >= 3]
+        strat = (arm_strategy or getattr(arm, "strategy", "any") or "any").lower()
+        # earliest in-window match per component -> concept: (t_rel, code, method, name)
+        comp: dict[str, tuple] = {}
         for _, row in meds.iterrows():
             name = row["EVENT_NAME"]
-            if arm_match_fn is not None:
-                res = arm_match_fn(name, concepts)  # -> (matched, code, method)
-                ok = bool(res[0])
-                code = res[1] if len(res) > 1 else None
-                method = res[2] if len(res) > 2 else "name"
-            else:
-                n = _norm_drug(name)
-                code = None
-                if "placebo" in n:
-                    ok, method = False, "substring"
-                elif name in concepts or n in concepts_norm:
-                    ok, method = True, "name"          # exact (raw or normalized) name match
-                elif resolve is not _identity and resolve(name) in concepts:
-                    ok, method = True, "name"          # vocab-resolved (#5) match
-                elif any(cn in n or n in cn for cn in concepts_norm):
-                    ok, method = True, "substring"     # last-resort substring (LOW)
-                else:
-                    ok, method = False, "substring"
-            if ok:
-                t_rel = (row["TIMESTAMP"] - t0).total_seconds() / 3600.0
-                return arm.name, {"arm": arm.name, "matched_event_name": str(name),
-                                  "matched_code": code, "method": method,
-                                  "t_rel_hours": round(float(t_rel), 2)}
+            for c in concepts:
+                if c in comp:
+                    continue
+                ok, code, method = _component_match(name, c, resolve, arm_match_fn)
+                if ok:
+                    t_rel = (row["TIMESTAMP"] - t0).total_seconds() / 3600.0
+                    comp[c] = (round(float(t_rel), 2), code, method, str(name))
+        n_required = len(concepts) if (strat == "all" and concepts) else 1
+        if comp and len(comp) >= n_required:
+            # 'all' -> protocol completes at the LAST required component; 'any' -> first exposure
+            pick = max if strat == "all" else min
+            rep_c = pick(comp, key=lambda k: comp[k][0])
+            t_rel, code, method, ename = comp[rep_c]
+            if any(v[2] == "substring" for v in comp.values()):  # audit honesty: weakest tier
+                method = "substring"
+            return arm.name, {"arm": arm.name, "matched_event_name": ename,
+                              "matched_code": code, "concept": rep_c, "method": method,
+                              "t_rel_hours": t_rel}
     return (control.name if control else "control"), None
 
 
@@ -233,6 +259,7 @@ def build_cohort(
     skip_unmeasurable: bool = True,
     measurable_fn=None,
     arm_match_fn=None,
+    arm_strategy: str | None = None,
     provenance_sample: int = 50,
 ) -> CohortResult:
     """Build the emulated-trial cohort with explicit, immortal-time-safe time-zero.
@@ -301,7 +328,7 @@ def build_cohort(
         if enforce_landmark and _outcome_before_landmark(traj, spec, t0, landmark, _resolve):
             n_excluded_immortal += 1
             continue
-        arm_name, prov = _assign_with_prov(traj, spec, t0, _resolve, arm_match_fn)
+        arm_name, prov = _assign_with_prov(traj, spec, t0, _resolve, arm_match_fn, arm_strategy)
         arms.setdefault(arm_name, []).append(tid)
         index_times[tid] = t0
         if prov is not None:  # a treatment match — record its method + a bounded sample

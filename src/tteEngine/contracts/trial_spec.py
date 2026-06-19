@@ -48,6 +48,17 @@ class Arm(BaseModel):
     name: str
     is_control: bool = False
     intervention_concepts: list[str] = Field(default_factory=list)
+    strategy: str = Field(
+        "any",
+        description=(
+            "Treatment-STRATEGY definition (not just the drug->code). 'any' = treated if "
+            "ANY intervention_concept is administered in the grace window (single-drug or "
+            "alternative-of arms). 'all' = PER-PROTOCOL combination: treated only if EVERY "
+            "component is co-administered (e.g. HAT sepsis protocol = vitamin C + thiamine + "
+            "hydrocortisone). Guards against routine-drug over-matching (the ICU 'banana bag' "
+            "thiamine flipping nearly everyone to 'treated' and collapsing the control arm)."
+        ),
+    )
 
 
 class OutcomeSpec(BaseModel):

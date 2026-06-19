@@ -90,6 +90,7 @@ def run_corpus(
     resolve=None,
     arm_match_fn=None,
     measurable_fn=None,
+    arm_strategy: str | None = None,
     on_audit: Callable | None = None,
 ) -> Iterator[ComparisonResult]:
     """Stream one ComparisonResult per (trial x dataset) that emulates cleanly.
@@ -124,7 +125,8 @@ def run_corpus(
                 _mf = (lambda c, _d=ds: measurable_fn(c, _d)) if measurable_fn is not None else None
                 _amf = (lambda n, cc, _d=ds: arm_match_fn(n, cc, _d)) if arm_match_fn is not None else None
                 cohort = build_cohort(events, spec, dataset=ds, resolve=resolve,
-                                      arm_match_fn=_amf, measurable_fn=_mf)
+                                      arm_match_fn=_amf, measurable_fn=_mf,
+                                      arm_strategy=arm_strategy)
                 if cohort.n_total == 0:
                     drops.add(nct, ds, "empty cohort after eligibility")
                     continue
