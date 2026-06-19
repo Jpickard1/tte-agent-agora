@@ -127,3 +127,48 @@ def run_corpus_benchmark(
     summary["n_dropped"] = len(drops)
     summary["drops_by_reason"] = drops.by_reason()
     return summary, drops
+
+
+# --------------------------------------------------------------------------- #
+# Persistence: the corpus artifact (#36 -> #64 meta / #60 figures / #49 UI)
+#
+# JSONL SCHEMA = one contracts.ComparisonResult per line (its full pydantic JSON):
+#   {"nct_id","dataset",
+#    "emulated":{TTEResult: "nct_id","dataset","method","measure","estimate",
+#                "ci_low","ci_high","n_treated","n_control","extra":{...}},
+#    "observed_estimate","observed_measure","agreement","notes"}
+# Stream-written (O(1) memory) so the live >10k run persists ONCE; every offline
+# analysis reads it back via read_corpus_jsonl without re-extracting.
+# --------------------------------------------------------------------------- #
+
+def write_corpus_jsonl(comparisons: Iterable[ComparisonResult], path) -> int:
+    """Stream ComparisonResult rows to JSONL (one JSON object per line). O(1)
+    memory; returns the number of rows written."""
+    n = 0
+    with open(path, "w") as fh:
+        for c in comparisons:
+            fh.write(c.model_dump_json())
+            fh.write("\n")
+            n += 1
+    return n
+
+
+def read_corpus_jsonl(path) -> Iterator[ComparisonResult]:
+    """Stream ComparisonResult rows back from JSONL (O(1) memory). Blank lines are
+    skipped so a partially-written file is still readable."""
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield ComparisonResult.model_validate_json(line)
+
+
+def run_corpus_to_jsonl(jobs, datasets, path, *, drops: DropLog | None = None, **kwargs):
+    """Run the corpus and PERSIST every ComparisonResult to JSONL in one streaming
+    pass; returns (n_written, drops). Aggregate/analyze offline from the file:
+        run_benchmark(read_corpus_jsonl(path))      # summary, O(1)
+        # probe #64 meta / #60 figures / #49 UI all read read_corpus_jsonl(path)
+    """
+    drops = drops if drops is not None else DropLog()
+    n = write_corpus_jsonl(run_corpus(jobs, datasets, drops=drops, **kwargs), path)
+    return n, drops
