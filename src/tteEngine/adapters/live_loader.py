@@ -68,8 +68,12 @@ def _read_filtered(path: str, *, usecols, keep, dtype=None, chunksize: int = _CH
 # MIMIC-IV
 # --------------------------------------------------------------------------- #
 def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
-               resolve: Resolver | None = None, chunksize: int = _CHUNK) -> dict:
-    """Load the plan-targeted MIMIC-IV tables for adapters.mimic.extract."""
+               resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None) -> dict:
+    """Load the plan-targeted MIMIC-IV tables for adapters.mimic.extract.
+
+    `prepass` (optional #124 Prepass): when given, labevents/chartevents come from
+    the shared pre-pass sliced to this cohort (no per-trial rescan of the 2.5/3.3GB
+    tables) — what makes lab COVARIATES feasible at >=1k scale."""
     resolve = resolve or _identity
     hosp, icu = f"{root}/hosp", f"{root}/icu"
     types = {c.event_type for c in plan.concepts}
@@ -96,31 +100,41 @@ def load_mimic(plan: ExtractionPlan, *, root: str = MIMIC_ROOT,
         if cohort_codes:
             cohort_hadm = set(dx[dx["icd_code"].isin(cohort_codes)]["hadm_id"].astype("int64"))
 
+    # labs/measurements: from the shared pre-pass (sliced, no rescan) if given, else
+    # the per-trial filtered scan.
+    pp_tables = prepass.slice(cohort_hadm) if prepass is not None else {}
+
     lab_names = {n.lower() for n in _names_for(plan, EventType.LAB, resolve)}
     if lab_names:
-        dlab = pd.read_csv(f"{hosp}/d_labitems.csv.gz", usecols=["itemid", "label"])
-        sel = dlab[dlab["label"].astype(str).str.lower().isin(lab_names)]
-        id2label, ids = dict(zip(sel["itemid"], sel["label"])), set(sel["itemid"])
-        if ids:
-            lab = _read_filtered(
-                f"{hosp}/labevents.csv.gz", usecols=["hadm_id", "itemid", "charttime", "valuenum"],
-                keep=lambda c: c["itemid"].isin(ids) & c["hadm_id"].isin(cohort_hadm),
-                chunksize=chunksize)
-            lab["label"] = lab["itemid"].map(id2label)
-            tables["labevents"] = lab
+        if "labevents" in pp_tables:
+            tables["labevents"] = pp_tables["labevents"]
+        else:
+            dlab = pd.read_csv(f"{hosp}/d_labitems.csv.gz", usecols=["itemid", "label"])
+            sel = dlab[dlab["label"].astype(str).str.lower().isin(lab_names)]
+            id2label, ids = dict(zip(sel["itemid"], sel["label"])), set(sel["itemid"])
+            if ids:
+                lab = _read_filtered(
+                    f"{hosp}/labevents.csv.gz", usecols=["hadm_id", "itemid", "charttime", "valuenum"],
+                    keep=lambda c: c["itemid"].isin(ids) & c["hadm_id"].isin(cohort_hadm),
+                    chunksize=chunksize)
+                lab["label"] = lab["itemid"].map(id2label)
+                tables["labevents"] = lab
 
     meas_names = {n.lower() for n in _names_for(plan, EventType.MEASUREMENT, resolve)}
     if meas_names:
-        ditems = pd.read_csv(f"{icu}/d_items.csv.gz", usecols=["itemid", "label"])
-        sel = ditems[ditems["label"].astype(str).str.lower().isin(meas_names)]
-        id2label, ids = dict(zip(sel["itemid"], sel["label"])), set(sel["itemid"])
-        if ids:
-            ce = _read_filtered(
-                f"{icu}/chartevents.csv.gz", usecols=["hadm_id", "itemid", "charttime", "valuenum"],
-                keep=lambda c: c["itemid"].isin(ids) & c["hadm_id"].isin(cohort_hadm),
-                chunksize=chunksize)
-            ce["label"] = ce["itemid"].map(id2label)
-            tables["chartevents"] = ce
+        if "chartevents" in pp_tables:
+            tables["chartevents"] = pp_tables["chartevents"]
+        else:
+            ditems = pd.read_csv(f"{icu}/d_items.csv.gz", usecols=["itemid", "label"])
+            sel = ditems[ditems["label"].astype(str).str.lower().isin(meas_names)]
+            id2label, ids = dict(zip(sel["itemid"], sel["label"])), set(sel["itemid"])
+            if ids:
+                ce = _read_filtered(
+                    f"{icu}/chartevents.csv.gz", usecols=["hadm_id", "itemid", "charttime", "valuenum"],
+                    keep=lambda c: c["itemid"].isin(ids) & c["hadm_id"].isin(cohort_hadm),
+                    chunksize=chunksize)
+                ce["label"] = ce["itemid"].map(id2label)
+                tables["chartevents"] = ce
 
     med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
     if med_names:
@@ -139,8 +153,11 @@ _EICU_VITAL_FILES = {"vitalperiodic": "vitalPeriodic.csv.gz", "vitalaperiodic": 
 
 
 def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
-              resolve: Resolver | None = None, chunksize: int = _CHUNK) -> dict:
-    """Load the plan-targeted eICU-CRD tables for adapters.eicu.extract."""
+              resolve: Resolver | None = None, chunksize: int = _CHUNK, prepass=None) -> dict:
+    """Load the plan-targeted eICU-CRD tables for adapters.eicu.extract.
+
+    `prepass` (optional #124 Prepass): lab/vitalperiodic come from the shared
+    pre-pass sliced to this cohort (no per-trial rescan) when supplied."""
     resolve = resolve or _identity
     types = {c.event_type for c in plan.concepts}
     tables: dict[str, pd.DataFrame] = {}
@@ -173,12 +190,17 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
             cohort_stays = set(dx[dx["icd9code"].astype(str).apply(
                 lambda s: any(k in s for k in cc))]["patientunitstayid"].astype("int64"))
 
+    pp_tables = prepass.slice(cohort_stays) if prepass is not None else {}
+
     lab_names = {n.lower() for n in _names_for(plan, EventType.LAB, resolve)}
     if lab_names:
-        tables["lab"] = _read_filtered(
-            f"{root}/lab.csv.gz", usecols=["patientunitstayid", "labresultoffset", "labname", "labresult"],
-            keep=lambda c: c["labname"].astype(str).str.lower().isin(lab_names)
-            & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
+        if "lab" in pp_tables:
+            tables["lab"] = pp_tables["lab"]
+        else:
+            tables["lab"] = _read_filtered(
+                f"{root}/lab.csv.gz", usecols=["patientunitstayid", "labresultoffset", "labname", "labresult"],
+                keep=lambda c: c["labname"].astype(str).str.lower().isin(lab_names)
+                & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
 
     med_names = {n.lower() for n in _names_for(plan, EventType.MEDICATION, resolve)}
     if med_names:
@@ -187,7 +209,9 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
             keep=lambda c: c["drugname"].astype(str).str.lower().isin(med_names)
             & c["patientunitstayid"].isin(cohort_stays), chunksize=chunksize)
 
-    if EventType.MEASUREMENT in types:
+    if EventType.MEASUREMENT in types and "vitalperiodic" in pp_tables:
+        tables["vitalperiodic"] = pp_tables["vitalperiodic"]   # #124 pre-pass slice
+    elif EventType.MEASUREMENT in types:
         from tteEngine.adapters.eicu import VITAL_COLUMNS, VITAL_OFFSET
         wanted = _names_for(plan, EventType.MEASUREMENT, resolve)
         want_cols = {col for col, vit in VITAL_COLUMNS.items() if vit in wanted}
@@ -246,7 +270,7 @@ def _enrich_vocab_from_index(plan: ExtractionPlan, index: dict) -> None:
 
 def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT,
                     eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK,
-                    use_vocab_index: bool = True, index_cache_dir=None):
+                    use_vocab_index: bool = True, index_cache_dir=None, prepasses=None):
     """Return the `extract_fn(plan, spec, dataset) -> canonical 5-col DataFrame |
     None` that probe's #102 run_corpus consumes: load the plan-targeted real tables
     for `dataset` and run the matching adapter.
@@ -282,12 +306,13 @@ def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT
         idx = indexes.get(dataset)
         if idx is not None:
             _enrich_vocab_from_index(plan, idx)   # data-driven codes for this trial
+        pp = (prepasses or {}).get(dataset)   # #124 shared pre-pass (full mode), if supplied
         if dataset == "MIMIC-IV":
             df = mimic.extract(plan, load_mimic(plan, root=mimic_root, resolve=_resolve,
-                                                chunksize=chunksize), resolve=_resolve)
+                                                chunksize=chunksize, prepass=pp), resolve=_resolve)
         elif dataset == "eICU-CRD":
             df = eicu.extract(plan, load_eicu(plan, root=eicu_root, resolve=_resolve,
-                                              chunksize=chunksize), resolve=_resolve)
+                                              chunksize=chunksize, prepass=pp), resolve=_resolve)
         else:
             return None  # MGB is human-gated (#8); unknown datasets unsupported
         return df if df is not None and not df.empty else None
