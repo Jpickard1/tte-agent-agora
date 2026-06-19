@@ -197,3 +197,53 @@ def test_skip_unmeasurable_can_be_disabled():
                              comparator=Comparator.GE, value=18.0)]})
     c = build_cohort(EVENTS, spec, dataset="TEST", skip_unmeasurable=False)
     assert c.n_total == 0  # age criterion now fails everyone (no demog events)
+
+
+def test_audit_eligibility_decisions_recorded():
+    # measurable_fn returning (bool, reason) -> EligibilityDecision with reason
+    def mf(c):
+        if c.event_type == EventType.DEMOGRAPHIC:
+            return (False, "no demographics emitted")
+        return (True, None)
+    spec = SPEC.model_copy(update={"eligibility": SPEC.eligibility + [
+        EligibilityCriterion(concept="age", event_type=EventType.DEMOGRAPHIC,
+                             comparator=Comparator.GE, value=18.0)]})
+    c = build_cohort(EVENTS, spec, dataset="TEST", measurable_fn=mf)
+    decs = {d["concept"]: d for d in c.eligibility_decisions}
+    assert decs["age"]["result"] == "skipped_unmeasurable"
+    assert decs["age"]["measurable"] is False and "demographics" in decs["age"]["reason"]
+    assert decs["sepsis"]["result"] == "applied" and decs["sepsis"]["measurable"] is True
+
+
+def test_audit_arm_provenance_exact_name_is_not_low():
+    c = build_cohort(EVENTS, SPEC, dataset="TEST")  # EVENTS med 'hydrocortisone' == concept
+    p1 = next(p for p in c.assignment_provenance if p["trajectory_id"] == 1)
+    assert p1["arm"] == "steroid" and p1["method"] == "name"  # exact name, not substring
+    assert c.arm_method_counts.get("steroid", {}).get("name") == 1
+    assert c.n_low_confidence == 0
+
+
+def test_audit_arm_provenance_true_substring_is_low_confidence():
+    # 'Drug: Thiamine' concept vs MIMIC 'thiamine 100mg' -> normalized substring (LOW)
+    spec = SPEC.model_copy(update={"arms": [
+        Arm(name="thiamine", intervention_concepts=["Drug: Thiamine"]),
+        Arm(name="control", is_control=True)]})
+    ev = _frame([
+        (1, _hr(-1), "diagn", "sepsis", "1"), (1, _hr(0), "lab", "lactate", "4"),
+        (1, _hr(2), "medic", "thiamine 100mg", "1")])
+    c = build_cohort(ev, spec, dataset="TEST")
+    p1 = c.assignment_provenance[0]
+    assert p1["method"] == "substring" and c.n_low_confidence == 1
+
+
+def test_audit_arm_provenance_uses_injected_code_matcher():
+    # injected arm_match_fn (worker1's matcher) -> high-confidence code provenance
+    def matcher(name, concepts):
+        if "hydrocortisone" in name.lower():
+            return (True, "RxNorm:5492", "rxnorm_code")
+        return (False, None, None)
+    c = build_cohort(EVENTS, SPEC, dataset="TEST", arm_match_fn=matcher)
+    p1 = next(p for p in c.assignment_provenance if p["trajectory_id"] == 1)
+    assert p1["matched_code"] == "RxNorm:5492" and p1["method"] == "rxnorm_code"
+    assert c.n_low_confidence == 0  # code match, not substring
+    assert c.arm_method_counts["steroid"]["rxnorm_code"] == 1
