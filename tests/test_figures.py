@@ -53,3 +53,55 @@ def test_forest_plot_empty_raises(tmp_path):
     from tteEngine.figures import forest_plot
     with pytest.raises(ValueError):
         forest_plot([], tmp_path / "x.png")
+
+
+# --- calibration figure (#60): consumes #41's CalibrationCurve shape (duck-typed) ---
+
+class _StubPoint:
+    def __init__(self, emulated, observed, in_ci):
+        self.emulated, self.observed, self.in_ci = emulated, observed, in_ci
+
+
+class _StubCurve:
+    """Matches probe's #41 CalibrationCurve shape (points/slope/intercept/coverage)."""
+    def __init__(self):
+        self.points = [_StubPoint(0.6, 0.7, True), _StubPoint(1.3, 0.9, False),
+                       _StubPoint(0.8, 0.85, True)]
+        self.slope, self.intercept, self.coverage, self.n = 0.9, 0.05, 2 / 3, 3
+
+
+def test_calibration_points_pure():
+    from tteEngine.figures import calibration_points
+    pts = calibration_points(_StubCurve())
+    assert len(pts) == 3
+    assert pts[0] == {"emulated": 0.6, "observed": 0.7, "in_ci": True}
+    assert pts[1]["in_ci"] is False
+
+
+def test_calibration_points_accepts_dicts():
+    from tteEngine.figures import calibration_points
+
+    class C:
+        points = [{"emulated": 0.5, "observed": 0.6, "in_ci": True},
+                  {"emulated": float("nan"), "observed": 1.0, "in_ci": False}]  # NaN skipped
+    assert calibration_points(C()) == [{"emulated": 0.5, "observed": 0.6, "in_ci": True}]
+
+
+def test_calibration_plot_writes_file(tmp_path):
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("numpy")
+    from tteEngine.figures import calibration_plot
+    out = tmp_path / "calibration.png"
+    p = calibration_plot(_StubCurve(), out)
+    assert out.exists() and out.stat().st_size > 0 and p == str(out)
+
+
+def test_calibration_plot_empty_raises(tmp_path):
+    pytest.importorskip("matplotlib")
+    from tteEngine.figures import calibration_plot
+
+    class Empty:
+        points = []
+        slope = intercept = coverage = None
+    with pytest.raises(ValueError):
+        calibration_plot(Empty(), tmp_path / "x.png")
