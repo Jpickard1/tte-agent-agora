@@ -7,5 +7,12 @@ Reuses emulaTTE cohort_builder's landmark pattern.
 """
 
 from .builder import build_analysis_frame, build_cohort
+from .consort import aggregate_diagnostics, consort_flow, format_consort
 
-__all__ = ["build_cohort", "build_analysis_frame"]
+__all__ = [
+    "build_cohort",
+    "build_analysis_frame",
+    "consort_flow",
+    "format_consort",
+    "aggregate_diagnostics",
+]
