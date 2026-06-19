@@ -196,11 +196,13 @@ def _extract_mortality(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
 
 
 def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
-            resolve: Resolver | None = None) -> pd.DataFrame:
+            resolve: Resolver | None = None, drug_matcher: dict | None = None) -> pd.DataFrame:
     """Build the canonical 5-col stream for `plan` from eICU `tables` (patient,
     diagnosis, lab, medication, vitalperiodic/vitalaperiodic). Covers DIAGNOSIS/
     LAB/MEDICATION (generic loop), MEASUREMENT (melted vitals) and OUTCOME
-    (mortality from patient discharge status). Returns a validate_canonical df."""
+    (mortality from patient discharge status). When `drug_matcher` is supplied,
+    MEDICATION is matched BY CODE (drughiclseqno) + emitted as the arm concept (#131
+    seam A). Returns a validate_canonical df."""
     resolve = resolve or _identity_resolver
     stays = _cohort_stays(plan, tables, resolve)
     if not stays:
@@ -213,6 +215,8 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
         spec = TABLE_SPEC.get(req.event_type)
         if spec is None:
             continue
+        if req.event_type == EventType.MEDICATION and drug_matcher:
+            continue   # #131 seam A: matched by code below, not by name
         src = tables.get(spec["table"])
         if src is None or src.empty:
             continue
@@ -239,6 +243,31 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     # MEASUREMENT (wide vitals) + OUTCOME (mortality) via dedicated extractors
     parts.extend(_extract_vitals(plan, tables, stays, lo_min, hi_min, resolve))
     parts.extend(_extract_mortality(plan, tables, stays))
+
+    # #131 seam A: code-based MEDICATION (drughiclseqno -> arm concept + JSON value)
+    med = tables.get("medication")
+    if drug_matcher and med is not None and not med.empty:
+        from tteEngine.matching import assign_med_concepts, med_event_value
+        rows = med[med[_STAY].astype("int64").isin(stays)].copy()
+        off = pd.to_numeric(rows.get("drugstartoffset"), errors="coerce")
+        rows = rows[(off >= lo_min) & (off <= hi_min)]
+        if not rows.empty:
+            concept, code, method = assign_med_concepts(rows, ("drughiclseqno",), drug_matcher)
+            rows = rows.assign(_concept=concept, _code=code, _method=method)
+            rows = rows[rows["_concept"].notna()]
+            if not rows.empty:
+                n = len(rows)
+                names = rows["drugname"].tolist() if "drugname" in rows.columns else [None] * n
+                doses = rows["dosage"].tolist() if "dosage" in rows.columns else [None] * n
+                parts.append(pd.DataFrame({
+                    "TRAJECTORY_ID": rows[_STAY].astype("int64"),
+                    "TIMESTAMP": _ts(rows["drugstartoffset"]),
+                    "EVENT_TYPE": EventType.MEDICATION.value,
+                    "EVENT_NAME": rows["_concept"].astype(str),
+                    "EVENT_VALUE": [med_event_value(raw_name=nm, code=cd, method=mt, dose=ds,
+                                                    source_table="medication")
+                                   for nm, cd, mt, ds in zip(names, rows["_code"], rows["_method"], doses)],
+                }))
 
     if not parts:
         return _empty_canonical()
