@@ -23,6 +23,7 @@ import pandas as pd
 from tteEngine.common_format import validate_canonical
 from tteEngine.contracts.events import CANONICAL_COLUMNS, EventType
 from tteEngine.contracts.extraction_plan import ExtractionPlan
+from tteEngine.timing import effective_window, harmonize_timestamps
 
 #: synthetic anchor for eICU offset->timestamp (times are relative-by-design).
 EPOCH = pd.Timestamp("2000-01-01 00:00", tz="UTC")
@@ -191,7 +192,7 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     stays = _cohort_stays(plan, tables, resolve)
     if not stays:
         return _empty_canonical()
-    lo, hi = plan.window_hours
+    lo, hi = effective_window(plan)
     lo_min, hi_min = lo * 60.0, hi * 60.0
 
     parts: list[pd.DataFrame] = []
@@ -231,6 +232,7 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     for c in ("EVENT_TYPE", "EVENT_NAME", "EVENT_VALUE"):
         df[c] = df[c].astype("object")
     df = df.sort_values(["TRAJECTORY_ID", "TIMESTAMP"]).reset_index(drop=True)
+    df = harmonize_timestamps(df, getattr(plan, "timing", None))  # #31 common precision grid
     return validate_canonical(df[list(CANONICAL_COLUMNS)])
 
 

@@ -19,6 +19,7 @@ import pandas as pd
 from tteEngine.common_format import validate_canonical
 from tteEngine.contracts.events import CANONICAL_COLUMNS, EventType
 from tteEngine.contracts.extraction_plan import ExtractionPlan
+from tteEngine.timing import effective_window, harmonize_timestamps
 
 Resolver = Callable[[str], set[str]]
 
@@ -79,7 +80,7 @@ def extract(plan: ExtractionPlan, events: pd.DataFrame, *,
         return _empty_canonical()
 
     # window relative to each trajectory's first (admission-proxy) timestamp
-    lo, hi = plan.window_hours
+    lo, hi = effective_window(plan)
     anchor = ev.groupby("TRAJECTORY_ID")["TIMESTAMP"].transform("min")
     inwin = (ev["TIMESTAMP"] >= anchor + pd.to_timedelta(lo, "h")) \
         & (ev["TIMESTAMP"] <= anchor + pd.to_timedelta(hi, "h"))
@@ -90,6 +91,7 @@ def extract(plan: ExtractionPlan, events: pd.DataFrame, *,
     for c in ("EVENT_TYPE", "EVENT_NAME", "EVENT_VALUE"):
         ev[c] = ev[c].astype("object")
     ev = ev.sort_values(["TRAJECTORY_ID", "TIMESTAMP"]).reset_index(drop=True)
+    ev = harmonize_timestamps(ev, getattr(plan, "timing", None))  # #31 common precision grid
     return validate_canonical(ev[list(CANONICAL_COLUMNS)])
 
 
