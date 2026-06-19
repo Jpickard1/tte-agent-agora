@@ -149,3 +149,37 @@ def test_build_dashboard_joins_context_onto_cards():
     assert by[("NCT1", "MIMIC-IV")].why["emulable"] is True
     assert by[("NCT2", "eICU-CRD")].why["emulable"] is False
     assert m.context_summary["n"] == 2
+
+
+# ---- #104 redesign: pure helpers for the 3-view app ----
+
+def test_ctgov_url():
+    from tteEngine.ui import ctgov_url
+    assert ctgov_url("NCT01234567") == "https://clinicaltrials.gov/study/NCT01234567"
+
+
+def test_trial_table_and_group_by_trial():
+    pytest.importorskip("numpy")
+    pytest.importorskip("statsmodels")
+    from tteEngine.ui import build_dashboard, group_by_trial, trial_table
+    rows = [_cr("NCT1", "MIMIC-IV", 0.6, Agreement.CONCORDANT),
+            _cr("NCT1", "eICU-CRD", 0.7, Agreement.CONCORDANT),
+            _cr("NCT2", "MIMIC-IV", 1.4, Agreement.DISCORDANT)]
+    m = build_dashboard(rows)
+    tbl = trial_table(m)
+    assert len(tbl) == 3
+    assert tbl[0]["ctgov"] == "https://clinicaltrials.gov/study/NCT1"
+    assert {"nct_id", "dataset", "measure", "emulated", "observed", "agreement"} <= set(tbl[0])
+    groups = group_by_trial(m)
+    assert set(groups) == {"NCT1", "NCT2"} and len(groups["NCT1"]) == 2
+
+
+def test_theme_helpers_render_html():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    import theme
+    assert "IBM Plex" in theme.CSS and "--plum:#6b5ea6" in theme.CSS
+    assert "tte" in theme.header_html("crumb") and "clinicaltrials" not in theme.header_html("x")
+    assert "b-conc" in theme.badge_html("concordant") and "b-disc" in theme.badge_html("discordant")
+    assert "ClinicalTrials.gov trial" in theme.pipeline_html()
