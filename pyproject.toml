@@ -13,6 +13,7 @@ dependencies = [
 # Heavy analysis/data deps live behind extras so the contracts package imports cleanly.
 analysis = ["lifelines", "statsmodels", "scikit-learn", "numpy", "pandas", "pyarrow"]
 ctgov = ["requests"]
+viz = ["matplotlib"]
 dev = ["pytest", "ruff"]
 
 [build-system]
