@@ -23,6 +23,7 @@ TTE_EICU_ROOT) for other hosts. pandas only (no extra deps).
 from __future__ import annotations
 
 import os
+import re
 from typing import Callable
 
 import pandas as pd
@@ -208,25 +209,79 @@ def load_eicu(plan: ExtractionPlan, *, root: str = EICU_ROOT,
 # --------------------------------------------------------------------------- #
 # Live-run seam (#102): extract_fn(plan, spec, dataset) -> canonical 5-col | None
 # --------------------------------------------------------------------------- #
+#: EventType -> #109 vocab-index category for auto-resolving concepts to real codes.
+_INDEX_CATEGORY = {
+    EventType.DIAGNOSIS: "diagnosis", EventType.LAB: "lab",
+    EventType.MEDICATION: "medication", EventType.MEASUREMENT: "vital",
+}
+
+
+def _enrich_vocab_from_index(plan: ExtractionPlan, index: dict) -> None:
+    """Register the plan's concepts onto the #5 vocab using the #109 per-dataset
+    index, so vocab.resolve (concept->codes) AND vocab.classify (code->concept)
+    return the DATA-DRIVEN real codes for this dataset — what makes real ctgov
+    cohorts non-empty (a free-text condition like 'Sepsis' otherwise resolves to
+    nothing). Tries the full concept phrase first (precise), else its alpha tokens."""
+    from tteEngine import vocab
+    from tteEngine.adapters.vocab_index import codes_for
+
+    def reg(concept: str, category: str) -> None:
+        if not concept:
+            return
+        codes = codes_for(index, category, concept.lower())
+        if not codes:  # fall back to meaningful alpha tokens ('Sepsis-3' -> 'sepsis')
+            toks = [t for t in re.split(r"[^a-z0-9]+", concept.lower()) if len(t) >= 4]
+            if toks:
+                codes = codes_for(index, category, *toks)
+        if codes:
+            vocab.register_concept(concept, codes)
+
+    for concept in plan.cohort_filter_concepts:
+        reg(concept, "diagnosis")
+    for req in plan.concepts:
+        cat = _INDEX_CATEGORY.get(req.event_type)
+        if cat:
+            reg(req.concept, cat)
+
+
 def make_extract_fn(datasets=None, *, resolve=None, mimic_root: str = MIMIC_ROOT,
-                    eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK):
+                    eicu_root: str = EICU_ROOT, chunksize: int = _CHUNK,
+                    use_vocab_index: bool = True, index_cache_dir=None):
     """Return the `extract_fn(plan, spec, dataset) -> canonical 5-col DataFrame |
     None` that probe's #102 run_corpus consumes: load the plan-targeted real tables
     for `dataset` and run the matching adapter.
 
     `resolve` (concept -> source codes, default vocab.resolve) feeds BOTH the loader
-    (row pre-filter) and the adapter (concept match). Datasets not handled here
-    (MGB — human-gated; or any outside `datasets`) return None, which run_corpus
-    logs as a drop (no silent cap)."""
+    (row pre-filter) and the adapter (concept match). With `use_vocab_index` (default
+    on), the per-dataset #109 index is built/loaded ONCE and each trial's concepts
+    are auto-registered onto the vocab before extraction — so a real ctgov condition
+    ('Sepsis') resolves to that dataset's real codes (177 sepsis codes, not the
+    curated 44) and the cohort is non-empty. Datasets not handled here (MGB —
+    human-gated; or any outside `datasets`) return None (run_corpus logs the drop)."""
     from tteEngine import vocab
     from tteEngine.adapters import eicu, mimic
 
     _resolve = resolve or vocab.resolve
     allowed = set(datasets) if datasets else None
 
+    indexes: dict[str, dict] = {}
+    if use_vocab_index:
+        from tteEngine.adapters import vocab_index as VI
+        roots = {"MIMIC-IV": mimic_root, "eICU-CRD": eicu_root}
+        for ds in (datasets or ("MIMIC-IV", "eICU-CRD")):
+            if ds in roots:
+                try:
+                    kw = {"cache_dir": index_cache_dir} if index_cache_dir else {}
+                    indexes[ds] = VI.build_vocab_index(ds, root=roots[ds], **kw)
+                except Exception:
+                    pass  # degrade gracefully to the curated vocab
+
     def extract_fn(plan, spec, dataset):
         if allowed is not None and dataset not in allowed:
             return None
+        idx = indexes.get(dataset)
+        if idx is not None:
+            _enrich_vocab_from_index(plan, idx)   # data-driven codes for this trial
         if dataset == "MIMIC-IV":
             df = mimic.extract(plan, load_mimic(plan, root=mimic_root, resolve=_resolve,
                                                 chunksize=chunksize), resolve=_resolve)
