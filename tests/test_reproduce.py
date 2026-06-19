@@ -2,6 +2,8 @@
 Runs OFFLINE (synthetic emulator, no EHR data / no analysis extra)."""
 from pathlib import Path
 
+from tteEngine.contracts.context import load_context_jsonl
+from tteEngine.contracts.io import load_comparisons_jsonl
 from tteEngine.ctgov.reader import nct_id_of
 from tteEngine.reproduce import load_frozen_studies, reproduce, synthetic_emulate
 
@@ -32,3 +34,22 @@ def test_reproduce_outputs_and_summary(tmp_path):
     assert (tmp_path / "corpus.jsonl").exists() and (tmp_path / "RESULTS_NARRATIVE.md").exists()
     assert s["concordance_rate"] is not None
     assert "## Headline" in (tmp_path / "RESULTS_NARRATIVE.md").read_text()
+
+
+def test_reproduce_emits_context_sidecar_joined_to_corpus(tmp_path):
+    """#95 WHY sidecar: one record per (nct_id, dataset), same join key as corpus."""
+    s = reproduce(out_dir=tmp_path, seed=0)
+    assert (tmp_path / "context.jsonl").exists()
+    ctx = list(load_context_jsonl(tmp_path / "context.jsonl"))
+    corp = list(load_comparisons_jsonl(tmp_path / "corpus.jsonl"))
+    assert s["n_context"] == len(ctx) == len(corp)
+    assert {(r.nct_id, r.dataset) for r in ctx} == {(c.nct_id, c.dataset) for c in corp}
+    assert all(r.emulability_score is not None for r in ctx)
+
+
+def test_context_sidecar_deterministic_and_optional(tmp_path):
+    reproduce(out_dir=tmp_path / "a", seed=0)
+    reproduce(out_dir=tmp_path / "b", seed=0)
+    assert (tmp_path / "a" / "context.jsonl").read_text() == (tmp_path / "b" / "context.jsonl").read_text()
+    s = reproduce(out_dir=tmp_path / "c", seed=0, context=False)
+    assert s["n_context"] == 0 and not (tmp_path / "c" / "context.jsonl").exists()

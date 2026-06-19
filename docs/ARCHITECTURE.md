@@ -202,6 +202,11 @@ entry to the whole artifact:
   EMULATED side defaults to a **seeded** synthetic emulator
   (`sha256(nct|dataset|seed)`), so `python -m tteEngine.reproduce` is
   byte-identical across runs and in CI.
+- **Full gallery:** alongside `corpus.jsonl` it emits the per-`(nct_id,dataset)`
+  WHY sidecar `context.jsonl` (#95 — emulability / measurability / proxy /
+  cross-dataset variability), joined on the same key, so the UI's WHY panel (#98)
+  reproduces from the frozen corpus too. The sidecar write path is gated
+  import-light (degrades gracefully if the rigor layer is absent).
 - **Swap-in for the real numbers:** pass `emulate=<real engine pipeline>` (or run
   with MIMIC/eICU mounted) — *same command, same seeds* — to produce the live
   headline concordance/calibration figures.
