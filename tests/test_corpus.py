@@ -19,7 +19,12 @@ from tteEngine.contracts.results import (  # noqa: E402
     EffectMeasure,
     TTEResult,
 )
-from tteEngine.orchestration.corpus import DropLog, run_corpus, run_corpus_benchmark  # noqa: E402
+from tteEngine.orchestration.corpus import (  # noqa: E402
+    DropLog,
+    run_corpus,
+    run_corpus_benchmark,
+    run_corpus_to_jsonl,
+)
 
 
 def _crude_engine(events, cohort, spec):
@@ -168,3 +173,35 @@ def test_make_cohort_provider_threads_resolver():
     prov = make_cohort_provider(resolve=_code_resolver)
     cohort = prov(_raw_coded_stream(), spec, "MIMIC-IV")
     assert cohort.n_total == 4  # all four raw-coded patients now eligible
+
+
+def test_run_corpus_to_jsonl_persists_and_reads_back_offline(tmp_path):
+    # the live-run -> offline bridge: persist via the import-light contracts I/O,
+    # then aggregate from the SAVED file with no re-extraction.
+    from tteEngine.analysis import run_benchmark
+    from tteEngine.contracts.io import load_comparisons_jsonl
+
+    p = tmp_path / "corpus.jsonl"
+    n, drops = run_corpus_to_jsonl(
+        _jobs(4), ["MIMIC-IV", "eICU-CRD"], p,
+        extract_fn=_extract_ok, engine_fn=_crude_engine, compare_fn=_stub_compare)
+    assert n == 8 and len(drops) == 0
+    rows = list(load_comparisons_jsonl(p))           # read back via contracts loader
+    assert len(rows) == 8
+    assert run_benchmark(load_comparisons_jsonl(p))["n"] == 8   # offline aggregate
+
+
+def test_run_corpus_to_jsonl_imports_no_analysis(tmp_path):
+    # orchestration.corpus must persist WITHOUT importing the heavy analysis extra
+    import subprocess
+    import sys
+    code = (
+        "import sys; "
+        "import tteEngine.orchestration.corpus as c; "
+        "c.run_corpus_to_jsonl; "
+        "assert 'tteEngine.analysis' not in sys.modules, 'persist path pulled analysis'; "
+        "print('import-light OK')"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"})
+    assert "import-light OK" in r.stdout, r.stderr

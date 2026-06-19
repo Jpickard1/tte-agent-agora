@@ -48,6 +48,14 @@ from .meta import (
     random_effects,
     wilson_ci,
 )
+from .reliability import CalibrationCurve, CalibrationPoint, corpus_calibration
+from .drivers import (
+    DriverReport,
+    FeatureAssociation,
+    concordance_drivers,
+    extract_features,
+    write_narrative,
+)
 
 __all__ = [
     "run_tte",
@@ -84,4 +92,12 @@ __all__ = [
     "wilson_ci",
     "load_comparisons_jsonl",
     "dump_comparisons_jsonl",
+    "corpus_calibration",
+    "CalibrationCurve",
+    "CalibrationPoint",
+    "concordance_drivers",
+    "DriverReport",
+    "FeatureAssociation",
+    "extract_features",
+    "write_narrative",
 ]
