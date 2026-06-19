@@ -271,6 +271,52 @@ def build_drug_matcher(spec, dataset: str, *, catalog: list[dict] | None = None,
 
 
 # --------------------------------------------------------------------------- #
+# Labs + demographics (#133) — itemid/LOINC code sets (labs) + demographic recog.
+# --------------------------------------------------------------------------- #
+#: lab concept -> name synonyms (the reviewed layer); the CODE SET (MIMIC itemids /
+#: eICU labnames) is derived from the #109 vocab-index lab catalog, so it reflects
+#: the labs actually present. Extend per trial.
+LAB_SYNONYMS: dict[str, set[str]] = {
+    "lactate": {"lactate", "lactic acid"},
+    "creatinine": {"creatinine"},
+    "bilirubin": {"bilirubin"},
+    "platelet": {"platelet", "platelet count"},
+    "wbc": {"wbc", "white blood cell", "leukocyte"},
+    "bun": {"bun", "urea nitrogen"},
+    "bicarbonate": {"bicarbonate", "hco3", "co2"},
+    "glucose": {"glucose"},
+    "hemoglobin": {"hemoglobin", "hgb"},
+    "ph": {"ph"},
+    "pao2": {"po2", "pao2"},
+}
+#: demographic concepts the cohort builder reads from patient-level fields (not a
+#: code-matched event); recorded measurable/unmeasurable per dataset by #147.
+DEMOGRAPHIC_CONCEPTS = {"age", "sex", "gender", "weight", "height", "bmi", "ethnicity", "race"}
+
+
+def build_lab_matcher(concepts, dataset: str, index: dict) -> dict:
+    """{lab_concept -> code set} from the #109 vocab-index lab catalog: each
+    concept's name synonyms (LAB_SYNONYMS) matched against the catalog -> the real
+    codes (MIMIC itemids / eICU labnames). Code-based lab matching for full-mode
+    adjustment (labs are pruned in the lean run, so this trails #131/#132)."""
+    entries = (index or {}).get("categories", {}).get("lab", [])
+    out: dict[str, set[str]] = {}
+    for concept in concepts:
+        syns = LAB_SYNONYMS.get(concept.lower(), {concept.lower()})
+        codes = {e["code"] for e in entries
+                 if any(s in e["name"].lower() or s in e["code"].lower() for s in syns)}
+        if codes:
+            out[concept] = codes
+    return out
+
+
+def is_demographic(concept: str) -> bool:
+    """Whether a concept is a patient-level demographic (age/sex/...) — matched from
+    patient fields, not a coded event; #147 records its (un)measurability."""
+    return (concept or "").lower() in DEMOGRAPHIC_CONCEPTS
+
+
+# --------------------------------------------------------------------------- #
 # Emit into the canonical audit schema (contracts.audit, #140/#144) — no 2nd schema.
 # (Re-added: this raced the #141 merge and was stranded; #144 supplied the fields.)
 # --------------------------------------------------------------------------- #
@@ -353,6 +399,7 @@ __all__ = [
     "IcdCodeSet", "ICD_FAMILIES", "condition_codeset", "build_dx_matcher",
     "DrugCodeSet", "DRUG_INGREDIENTS", "drug_codeset", "build_drug_catalog",
     "DRUG_CODE_FIELDS", "build_drug_matcher", "DRUG_CATALOG_CACHE",
+    "LAB_SYNONYMS", "build_lab_matcher", "DEMOGRAPHIC_CONCEPTS", "is_demographic",
     "SOURCE_TABLES", "to_match_provenance", "med_event_value",
     "provenance_from_event_value", "assign_med_concepts",
 ]
