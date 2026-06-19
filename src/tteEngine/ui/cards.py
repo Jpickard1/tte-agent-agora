@@ -67,12 +67,15 @@ def build_cards(
     comparisons: Iterable["ComparisonResult"],
     *,
     sepsis_ncts: set[str] | None = None,
+    ledger_index: dict | None = None,
 ) -> list[TrialEmulationCard]:
     """One card per comparison (streams). `sepsis_ncts` (e.g. from the #35 catalog)
-    marks sepsis trials so the gallery can filter/prioritize them."""
+    marks sepsis trials; `ledger_index` (probe's #105 ConfounderLedger keyed by
+    (nct_id, dataset)) drives the per-card confounder ledger when present."""
     from tteEngine.ui.confounders import confounder_block
 
     sepsis = sepsis_ncts or set()
+    ledgers = ledger_index or {}
     cards: list[TrialEmulationCard] = []
     for c in comparisons:
         e = c.emulated
@@ -84,6 +87,6 @@ def build_cards(
             agreement=_agree(c), verdict=_verdict(c),
             p_value=extra.get("p_value"), e_value=extra.get("e_value_point"),
             n_treated=e.n_treated, n_control=e.n_control,
-            confounders=confounder_block(extra, ledger=extra.get("confounder_ledger")),
+            confounders=confounder_block(extra, ledger=ledgers.get((c.nct_id, c.dataset))),
         ))
     return cards
