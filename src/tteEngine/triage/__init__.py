@@ -91,6 +91,28 @@ def _eligibility_component(spec: TargetTrialSpec, reasons: list[str]) -> float:
     return frac
 
 
+#: ctgov intervention-type prefixes that are NOT drugs -> not emulable in ICU drug
+#: data (the real run found TORAYMYXIN/Starling-SV device trials yield no med events).
+_NONDRUG_TYPES = ("device", "procedure", "radiation", "behavioral", "diagnostic test",
+                  "genetic", "other")
+#: high-prevalence ICU "background" drugs — given to ~everyone (banana bag), so a
+#: trial whose ONLY distinguishing intervention is one of these has ambiguous arms
+#: (#122/#162-B: down-rank, since 'treated' ~= 'got routine care').
+ROUTINE_DRUGS = {"thiamine", "multivitamin", "vitamin", "vitamin c", "ascorbic acid",
+                 "folic acid", "folate", "magnesium", "normal saline", "saline",
+                 "sodium chloride", "dextrose", "potassium chloride", "acetaminophen",
+                 "heparin", "famotidine", "pantoprazole", "docusate", "senna"}
+
+
+def _intervention_type(concept: str) -> str:
+    m = re.match(r"\s*([a-z][a-z ]*?)\s*:", (concept or "").lower())
+    return m.group(1).strip() if m else "drug"     # unprefixed -> assume drug
+
+
+def _strip_type(concept: str) -> str:
+    return re.sub(r"^\s*[a-z][a-z ]*?\s*:\s*", "", (concept or "").lower()).strip()
+
+
 def _exposure_component(spec: TargetTrialSpec, reasons: list[str]) -> float:
     treatment = [a for a in spec.arms if not a.is_control]
     if not treatment:
@@ -100,7 +122,20 @@ def _exposure_component(spec: TargetTrialSpec, reasons: list[str]) -> float:
     if not identifiable:
         reasons.append("treatment arm(s) have no identifiable intervention concept")
         return 0.0
-    return len(identifiable) / len(treatment)
+    # #122: a DEVICE/non-drug intervention isn't emulable in ICU drug data
+    concepts = [c for a in identifiable for c in a.intervention_concepts]
+    drugs = [c for c in concepts if _intervention_type(c) not in _NONDRUG_TYPES]
+    if not drugs:
+        reasons.append("intervention is device/non-drug — not emulable in ICU drug data")
+        return 0.0
+    score = len(identifiable) / len(treatment)
+    # #122/#162-B: distinguishing-drug — if EVERY drug component is routine/high-
+    # prevalence, the arms are ambiguous ('treated' ~= routine care) -> down-rank.
+    if all(_strip_type(c) in ROUTINE_DRUGS for c in drugs):
+        reasons.append("intervention is routine high-prevalence drug(s) — arms likely "
+                       "ambiguous (over-inclusion); not a distinguishing treatment")
+        score *= 0.5
+    return score
 
 
 def _outcome_component(spec: TargetTrialSpec, reasons: list[str]) -> float:
