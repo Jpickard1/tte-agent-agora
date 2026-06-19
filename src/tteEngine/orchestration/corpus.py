@@ -119,8 +119,12 @@ def run_corpus(
                 if events is None or len(events) == 0:
                     drops.add(nct, ds, "no extractable events")
                     continue
+                # run_corpus iterates datasets, so it binds the dataset into the
+                # (dataset-aware) resolvers -> build_cohort keeps its per-dataset contract.
+                _mf = (lambda c, _d=ds: measurable_fn(c, _d)) if measurable_fn is not None else None
+                _amf = (lambda n, cc, _d=ds: arm_match_fn(n, cc, _d)) if arm_match_fn is not None else None
                 cohort = build_cohort(events, spec, dataset=ds, resolve=resolve,
-                                      arm_match_fn=arm_match_fn, measurable_fn=measurable_fn)
+                                      arm_match_fn=_amf, measurable_fn=_mf)
                 if cohort.n_total == 0:
                     drops.add(nct, ds, "empty cohort after eligibility")
                     continue
