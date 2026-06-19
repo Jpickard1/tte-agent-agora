@@ -58,13 +58,19 @@ class EmulabilityScore(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+#: sepsis-family stems so 'septic shock' / 'severe sepsis' / 'septicaemia' all
+#: flag (jpic's sepsis priority — matching only 'sepsis' drops most real RCTs,
+#: which name the population 'septic shock'). 'septic' covers septic*/septicemia.
+SEPSIS_STEMS = ("sepsis", "septic")
+
+
 def _is_sepsis(spec: TargetTrialSpec) -> bool:
     hay = " ".join(filter(None, [
         (spec.condition or "").lower(),
         (spec.title or "").lower(),
         *[c.concept.lower() for c in spec.eligibility if c.concept],
     ]))
-    return "sepsis" in hay or any(
+    return any(stem in hay for stem in SEPSIS_STEMS) or any(
         vocab.classify(c.concept) == "sepsis" for c in spec.eligibility if c.concept)
 
 
@@ -170,4 +176,7 @@ def build_catalog(specs: list[TargetTrialSpec], *, datasets: tuple[str, ...] = D
     }
 
 
-__all__ = ["EmulabilityScore", "score_spec", "build_catalog", "DATASETS", "EHR_EVENT_TYPES"]
+from .runner import run_corpus_triage  # noqa: E402  (corpus runner, #35)
+
+__all__ = ["EmulabilityScore", "score_spec", "build_catalog", "DATASETS",
+           "EHR_EVENT_TYPES", "run_corpus_triage"]

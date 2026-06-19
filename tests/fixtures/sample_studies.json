@@ -1,0 +1,50 @@
+[
+  {
+    "protocolSection": {
+      "identificationModule": {
+        "nctId": "NCT-SEP-STEROID",
+        "briefTitle": "Hydrocortisone vs Placebo in Septic Shock"
+      },
+      "conditionsModule": {"conditions": ["Septic Shock", "Sepsis"]},
+      "eligibilityModule": {"minimumAge": "18 Years", "sex": "ALL"},
+      "armsInterventionsModule": {
+        "armGroups": [
+          {"label": "Hydrocortisone", "type": "ACTIVE_COMPARATOR",
+           "interventionNames": ["Hydrocortisone"]},
+          {"label": "Placebo", "type": "PLACEBO_COMPARATOR",
+           "interventionNames": ["Placebo"]}
+        ]
+      },
+      "outcomesModule": {
+        "primaryOutcomes": [
+          {"measure": "28-day all-cause mortality", "timeFrame": "28 Days"}
+        ]
+      }
+    },
+    "resultsSection": {"outcomeMeasuresModule": {"outcomeMeasures": []}}
+  },
+  {
+    "protocolSection": {
+      "identificationModule": {
+        "nctId": "NCT-QOL",
+        "briefTitle": "Mindfulness Program and Quality of Life in Outpatients"
+      },
+      "conditionsModule": {"conditions": ["Generalized Anxiety"]},
+      "eligibilityModule": {"minimumAge": "18 Years", "sex": "ALL"},
+      "armsInterventionsModule": {
+        "armGroups": [
+          {"label": "Mindfulness program", "type": "EXPERIMENTAL",
+           "interventionNames": []},
+          {"label": "Usual care", "type": "NO_INTERVENTION",
+           "interventionNames": []}
+        ]
+      },
+      "outcomesModule": {
+        "primaryOutcomes": [
+          {"measure": "Quality of life (WHOQOL-BREF)", "timeFrame": "2 Years"}
+        ]
+      }
+    },
+    "resultsSection": {"outcomeMeasuresModule": {"outcomeMeasures": []}}
+  }
+]
