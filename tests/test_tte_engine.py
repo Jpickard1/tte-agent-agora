@@ -1,22 +1,24 @@
 """Tests for the TTE engine entrypoint (#10, probe).
 
-The ported engine (engine.py) needs the `analysis` extra (lifelines/statsmodels);
-skip cleanly when absent. run_tte itself + TTEResult import without them.
+run_tte returns the canonical contracts.TTEResult (measure enum + estimate; rich
+diagnostics in .extra). The ported engine needs the `analysis` extra
+(lifelines/statsmodels) — skip cleanly when absent; contracts import without it.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from tteEngine.analysis import TTEResult, add_treatment_indicator, run_tte
+from tteEngine.analysis import add_treatment_indicator, run_tte
+from tteEngine.contracts.results import EffectMeasure, TTEResult
 
 pytest.importorskip("statsmodels")
 pytest.importorskip("lifelines")
 
 
 def _confounded_cohort(n=600, seed=0) -> pd.DataFrame:
-    """Synthetic confounded ICU cohort: sicker patients get treated AND die more,
-    so the crude effect is biased toward harm; adjustment should pull it back."""
+    """Confounded ICU cohort: sicker patients get treated AND die more, so the
+    crude effect is biased toward harm; adjustment should pull it back."""
     rng = np.random.default_rng(seed)
     age = rng.normal(65, 12, n)
     sofa = rng.normal(7, 3, n)
@@ -29,27 +31,29 @@ def _confounded_cohort(n=600, seed=0) -> pd.DataFrame:
     )
 
 
-def test_run_tte_binary_logistic_iptw():
+def test_run_tte_returns_contracts_result():
     r = run_tte(_confounded_cohort(), outcome_col="death28", covariates=["age", "sofa"],
-                adjustment="iptw", binary_test="logistic", label="28-day mortality")
-    assert isinstance(r, TTEResult) and r.ok
-    assert r.effect_measure == "Odds Ratio"
-    assert r.point_estimate is not None and r.ci_low <= r.point_estimate <= r.ci_high
-    assert r.n_treated + r.n_control == r.n_analyzed > 0
-    assert r.e_value_point is not None
-    assert {b.variable for b in r.balance} == {"age", "sofa"}
+                adjustment="iptw", binary_test="logistic", label="28-day mortality",
+                nct_id="NCT001", dataset="MIMIC-IV")
+    assert isinstance(r, TTEResult)             # the canonical contracts type
+    assert r.nct_id == "NCT001" and r.dataset == "MIMIC-IV"
+    assert r.measure == EffectMeasure.OR
+    assert r.estimate is not None and r.ci_low <= r.estimate <= r.ci_high
+    assert r.n_treated + r.n_control == r.extra["n_analyzed"] > 0
+    assert r.method == "iptw"
+    # rich diagnostics ride in .extra
+    assert r.extra["ok"] is True and r.extra["e_value_point"] is not None
+    assert {b["variable"] for b in r.extra["balance"]} == {"age", "sofa"}
 
 
 def test_adjustment_moves_estimate_toward_truth():
-    # crude (unadjusted) is biased by confounding; IPTW should move toward the
-    # true protective OR (<1) — i.e. adjusted point estimate is lower than crude.
     df = _confounded_cohort()
     crude = run_tte(df, outcome_col="death28", covariates=["age", "sofa"],
                     adjustment="unadjusted", binary_test="logistic")
     adj = run_tte(df, outcome_col="death28", covariates=["age", "sofa"],
                   adjustment="iptw", binary_test="logistic")
-    assert crude.ok and adj.ok
-    assert adj.point_estimate < crude.point_estimate
+    assert crude.extra["ok"] and adj.extra["ok"]
+    assert adj.estimate < crude.estimate  # IPTW corrects confounding-by-indication
 
 
 def test_add_treatment_indicator():
@@ -69,5 +73,4 @@ def test_run_tte_survival_cox():
                        "TRAJECTORY_ID": np.arange(n)})
     r = run_tte(df, outcome_col="t_event", time_col="t_time", outcome_kind="survival",
                 covariates=["sofa"], adjustment="iptw", survival_test="cox")
-    assert r.ok and r.effect_measure == "Hazard Ratio"
-    assert r.point_estimate is not None
+    assert r.measure == EffectMeasure.HR and r.estimate is not None
