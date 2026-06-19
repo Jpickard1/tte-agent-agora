@@ -30,6 +30,12 @@ from .calibration import (
     calibrate,
     observed_direction,
 )
+from .variants import (
+    SubgroupEstimate,
+    SubgroupReport,
+    run_estimand_variants,
+    run_subgroups,
+)
 
 __all__ = [
     "run_tte",
@@ -52,4 +58,8 @@ __all__ = [
     "ExpectedEffect",
     "observed_direction",
     "CONTROL_TRIALS",
+    "run_estimand_variants",
+    "run_subgroups",
+    "SubgroupReport",
+    "SubgroupEstimate",
 ]
