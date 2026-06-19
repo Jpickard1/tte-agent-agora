@@ -81,6 +81,65 @@ def _calibration_chart(points):
     return (ident + pts).properties(height=360, width=360)
 
 
+def _love_plot(balance):
+    """SMD before vs after adjustment per covariate (love plot)."""
+    rows = [b for b in (balance or []) if b.get("smd_before") is not None]
+    if not rows:
+        return None
+    long = []
+    for b in rows:
+        long.append({"variable": b["variable"], "phase": "before", "smd": abs(b["smd_before"])})
+        if b.get("smd_after") is not None:
+            long.append({"variable": b["variable"], "phase": "after", "smd": abs(b["smd_after"])})
+    df = pd.DataFrame(long)
+    thresh = alt.Chart(pd.DataFrame({"x": [0.1]})).mark_rule(color="#c0392b", strokeDash=[4, 4]).encode(x="x:Q")
+    pts = alt.Chart(df).mark_point(filled=True, size=70).encode(
+        x=alt.X("smd:Q", title="|standardized mean difference|"),
+        y=alt.Y("variable:N", sort="-x", title=None),
+        color=alt.Color("phase:N", scale=alt.Scale(domain=["before", "after"],
+                        range=["#c0392b", "#3f8f86"]), title="adjustment"),
+        tooltip=["variable", "phase", "smd"])
+    return (thresh + pts).properties(height=min(26 * len(rows) + 40, 460))
+
+
+def _ps_overlap_chart(ps):
+    """Propensity-score overlap (density bins per arm). Defensive — renders only
+    when probe's expected shape {bins:[{x, treated, control}]} is present."""
+    if not isinstance(ps, dict):
+        return None
+    bins = ps.get("bins")
+    if not bins:
+        return None
+    df = pd.DataFrame(bins)
+    if not {"x", "treated", "control"} <= set(df.columns):
+        return None
+    long = df.melt("x", ["treated", "control"], var_name="arm", value_name="density")
+    return alt.Chart(long).mark_area(opacity=0.5, interpolate="monotone").encode(
+        x=alt.X("x:Q", title="propensity score"), y=alt.Y("density:Q", stack=None),
+        color=alt.Color("arm:N", scale=alt.Scale(domain=["treated", "control"],
+                        range=["#6b5ea6", "#b8823c"]))).properties(height=220)
+
+
+def _render_confounders(conf):
+    """Confounder ledger (green/amber/red) + love plot + PS overlap for one card."""
+    summ = conf.get("summary") or {}
+    _eyebrow(f"CONFOUNDERS · {summ.get('label', '—')}"
+             + (f" · {summ.get('n_unmeasured')} not adjustable" if summ.get("n_unmeasured") else ""))
+    led = conf.get("ledger") or []
+    if led:
+        chips = "".join(
+            f"<span class='badge' style='color:{r['color']};background:{r['color']}14;"
+            f"border-color:{r['color']}55'>{r['name']} · {r['status'].replace('_', ' ')}</span> "
+            for r in led)
+        st.markdown(chips, unsafe_allow_html=True)
+    lp = _love_plot(conf.get("balance"))
+    if lp is not None:
+        st.altair_chart(lp, use_container_width=True)
+    pso = _ps_overlap_chart(conf.get("ps_overlap"))
+    if pso is not None:
+        st.altair_chart(pso, use_container_width=True)
+
+
 def _eyebrow(text):
     st.markdown(f"<div class='eyebrow'>{text}</div>", unsafe_allow_html=True)
 
@@ -196,6 +255,8 @@ def view_per_trial(m):
                 st.caption(bits)
                 if w.get("why_divergent"):
                     st.caption(f"cross-dataset variability — {w['why_divergent']}")
+            if c.confounders:
+                _render_confounders(c.confounders)
 
     _eyebrow("THIS TRIAL · emulated effect across datasets")
     trial_rows = [r for r in m.forest_rows if r.label.startswith(nct)]

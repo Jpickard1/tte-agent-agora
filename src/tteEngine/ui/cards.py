@@ -60,6 +60,7 @@ class TrialEmulationCard(BaseModel):
     n_treated: int = 0
     n_control: int = 0
     why: dict | None = None  # WHY-context (#98), joined from worker1's sidecar by (nct_id, dataset)
+    confounders: dict | None = None  # ledger + balance + ps_overlap + summary (#104 sibling)
 
 
 def build_cards(
@@ -69,6 +70,8 @@ def build_cards(
 ) -> list[TrialEmulationCard]:
     """One card per comparison (streams). `sepsis_ncts` (e.g. from the #35 catalog)
     marks sepsis trials so the gallery can filter/prioritize them."""
+    from tteEngine.ui.confounders import confounder_block
+
     sepsis = sepsis_ncts or set()
     cards: list[TrialEmulationCard] = []
     for c in comparisons:
@@ -81,5 +84,6 @@ def build_cards(
             agreement=_agree(c), verdict=_verdict(c),
             p_value=extra.get("p_value"), e_value=extra.get("e_value_point"),
             n_treated=e.n_treated, n_control=e.n_control,
+            confounders=confounder_block(extra, ledger=extra.get("confounder_ledger")),
         ))
     return cards
