@@ -61,6 +61,7 @@ class TrialEmulationCard(BaseModel):
     n_control: int = 0
     why: dict | None = None  # WHY-context (#98), joined from worker1's sidecar by (nct_id, dataset)
     confounders: dict | None = None  # ledger + balance + ps_overlap + summary (#104 sibling)
+    audit: dict | None = None  # assignment audit (#130/#135): HOW patients were sorted into arms
 
 
 def build_cards(

@@ -44,6 +44,7 @@ def build_dashboard(
     sepsis_ncts: set[str] | None = None,
     context_records=None,
     ledger_records=None,
+    audit_records=None,
 ) -> DashboardModel:
     """Assemble the dashboard model from a comparison stream + the analysis outputs.
 
@@ -86,6 +87,14 @@ def build_dashboard(
             if ctx is not None:
                 card.why = why_for(ctx)
         context_summary = corpus_context_summary(ctx_recs)
+
+    if audit_records is not None:  # #130: join the assignment audit by (nct_id, dataset)
+        def _ak(rec):
+            return (rec.get("nct_id"), rec.get("dataset")) if isinstance(rec, dict) \
+                else (getattr(rec, "nct_id", None), getattr(rec, "dataset", None))
+        audit_index = {_ak(r): (r if isinstance(r, dict) else r.model_dump()) for r in audit_records}
+        for card in cards:
+            card.audit = audit_index.get((card.nct_id, card.dataset))
 
     from tteEngine.figures.calibration import calibration_points
     return DashboardModel(

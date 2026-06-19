@@ -148,6 +148,54 @@ def _render_confounders(conf):
         st.caption("PS overlap: n/a (unadjusted / single-arm / non-PS method)")
 
 
+_LOW_CONF = {"substring"}
+
+
+def _render_sorting(audit):
+    """#130 'HOW PATIENTS WERE SORTED': CONSORT flow + eligibility decisions + arm
+    match basis (codes/methods, substring=amber) + per-patient provenance sample."""
+    _eyebrow("HOW PATIENTS WERE SORTED")
+    # CONSORT attrition
+    n_ineligible = max(audit.get("n_screened", 0) - audit.get("n_eligible", 0), 0)
+    st.caption(
+        f"screened {audit.get('n_screened', 0)} → "
+        f"−{n_ineligible} ineligible → eligible {audit.get('n_eligible', 0)} → "
+        f"−{audit.get('n_excluded_immortal', 0)} immortal-time · "
+        f"−{audit.get('n_unassigned', 0)} unassigned → enrolled {audit.get('n_enrolled', 0)}")
+
+    # arm match basis: which codes defined each arm + how patients matched
+    for arm in audit.get("arms", []):
+        codes = ", ".join(arm.get("defining_codes") or []) or "—"
+        mm = arm.get("match_method_counts") or {}
+        chips = " ".join(
+            f"<span class='badge' style='color:{'#c0392b' if k in _LOW_CONF else '#3f8f86'};"
+            f"background:{('#c0392b' if k in _LOW_CONF else '#3f8f86')}14'>{v} {k}"
+            f"{' ⚠' if k in _LOW_CONF else ''}</span>" for k, v in mm.items())
+        st.markdown(f"**{arm['name']}** (n={arm.get('n', 0)}) · codes: `{codes}` &nbsp; {chips}",
+                    unsafe_allow_html=True)
+    if audit.get("n_low_confidence"):
+        st.markdown(f"<span style='color:#b8823c;font-size:13px'>⚠ {audit['n_low_confidence']} "
+                    "arm assignments by LOW-CONFIDENCE (substring) match — verify</span>",
+                    unsafe_allow_html=True)
+
+    # eligibility decisions (enforced / skipped-unmeasurable)
+    elig = audit.get("eligibility") or []
+    if elig:
+        rows = [{"criterion": e.get("concept") or e.get("event_type"), "result": e.get("result"),
+                 "measurable": e.get("measurable"), "reason": e.get("reason")} for e in elig]
+        st.markdown("_eligibility_")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # per-patient provenance sample
+    sample = audit.get("sample") or []
+    if sample:
+        st.markdown("_how individual patients were assigned (sample)_")
+        srows = [{"patient": s.get("trajectory_id"), "arm": s.get("arm"),
+                  "matched event": s.get("matched_event_name"), "code": s.get("matched_code"),
+                  "method": s.get("method"), "t(h)": s.get("t_rel_hours")} for s in sample[:20]]
+        st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
+
+
 def _eyebrow(text):
     st.markdown(f"<div class='eyebrow'>{text}</div>", unsafe_allow_html=True)
 
@@ -263,6 +311,8 @@ def view_per_trial(m):
                 st.caption(bits)
                 if w.get("why_divergent"):
                     st.caption(f"cross-dataset variability — {w['why_divergent']}")
+            if c.audit:
+                _render_sorting(c.audit)
             if c.confounders:
                 _render_confounders(c.confounders)
 
@@ -310,8 +360,13 @@ def main() -> None:
             ledger_records = list(load_ledger_jsonl(ledger_path))
         except ImportError:
             ledger_records = None
+    audit_records = None
+    audit_path = os.environ.get("TTE_AUDIT_JSONL", "")
+    if audit_path and os.path.exists(audit_path):
+        from tteEngine.contracts.audit import load_audit_jsonl
+        audit_records = list(load_audit_jsonl(audit_path))
     m = build_dashboard(rows, sepsis_ncts=sepsis, context_records=context_records,
-                        ledger_records=ledger_records)
+                        ledger_records=ledger_records, audit_records=audit_records)
 
     # guided walkthrough: a sidebar path-stepper with progress (emulaTTE feel)
     views = ["What it does", "All-trials results", "Inspect a trial"]
