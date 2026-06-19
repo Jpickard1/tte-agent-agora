@@ -106,7 +106,10 @@ def test_resolver_injection_maps_concepts_to_codes():
         concepts=[ConceptRequest(concept="sepsis", event_type=EventType.DIAGNOSIS, role="eligibility")],
     )
     df = mimic.extract(plan, _tables(), resolve=resolve)
-    assert set(df["TRAJECTORY_ID"]) == {1} and list(df["EVENT_NAME"]) == ["A41"]
+    assert set(df["TRAJECTORY_ID"]) == {1}
+    # the dx is emitted (alongside the icu_admission anchor every cohort patient now gets)
+    assert list(df[df["EVENT_TYPE"] == "diagn"]["EVENT_NAME"]) == ["A41"]
+    assert "icu_admission" in set(df[df["EVENT_TYPE"] == "locat"]["EVENT_NAME"])
 
 
 def run():

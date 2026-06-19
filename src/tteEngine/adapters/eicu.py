@@ -227,6 +227,16 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
     lo_min, hi_min = lo * 60.0, hi * 60.0
 
     parts: list[pd.DataFrame] = []
+    # ICU-ADMISSION ANCHOR (t0 marker): a LOCATION event at offset 0 (unit admission)
+    # per cohort stay, so the landmark t0 = admission not the earliest event (death
+    # for outcome-only/control trajectories) — fixes empty cohorts + collapsed controls.
+    parts.append(pd.DataFrame({
+        "TRAJECTORY_ID": [int(s) for s in stays],
+        "TIMESTAMP": EPOCH,
+        "EVENT_TYPE": EventType.LOCATION.value,
+        "EVENT_NAME": "icu_admission",
+        "EVENT_VALUE": "1",
+    }))
     for req in plan.concepts:
         spec = TABLE_SPEC.get(req.event_type)
         if spec is None:
