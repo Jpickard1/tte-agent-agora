@@ -25,6 +25,10 @@ def _mimic_root(tmp):
     # real diagnoses_icd: NO charttime; single code per row
     _gz(pd.DataFrame({"hadm_id": [1, 2], "icd_code": ["99592", "E119"], "icd_version": [9, 10]}),
         hosp / "diagnoses_icd.csv.gz")
+    # dictionary for the #109 vocab index (long titles drive concept->code resolution)
+    _gz(pd.DataFrame({"icd_code": ["99592", "E119"],
+                      "long_title": ["Severe sepsis", "Type 2 diabetes mellitus"]}),
+        hosp / "d_icd_diagnoses.csv.gz")
     # real labevents key on itemid; label lives in d_labitems
     _gz(pd.DataFrame({"itemid": [50813, 50912], "label": ["Lactate", "Creatinine"],
                       "fluid": ["Blood", "Blood"], "category": ["Chem", "Chem"]}),
@@ -129,11 +133,33 @@ def test_load_eicu_targeted_reads_and_extracts(tmp_path):
 def test_make_extract_fn_dispatches_by_dataset(tmp_path):
     mroot, eroot = _mimic_root(tmp_path), _eicu_root(tmp_path)
     fn = live_loader.make_extract_fn(("MIMIC-IV", "eICU-CRD"), resolve=_resolve,
-                                 mimic_root=str(mroot), eicu_root=str(eroot))
+                                     mimic_root=str(mroot), eicu_root=str(eroot),
+                                     use_vocab_index=False)   # dispatch test: custom resolve, no index
     df = fn(_sepsis_plan(), None, "MIMIC-IV")
     assert df is not None and set(df["TRAJECTORY_ID"]) == {1}
     assert fn(_sepsis_plan(), None, "MGB") is None          # gated -> drop (no silent cap)
     assert fn(_sepsis_plan(), None, "OTHER") is None        # unknown dataset
+
+
+def test_make_extract_fn_autowires_vocab_index(tmp_path):
+    # the live-run bug: a real ctgov cohort concept is the free-text condition
+    # ('Sepsis'), which the CURATED vocab can't resolve -> empty cohort. The #109
+    # index auto-wire registers 'Sepsis' -> the dataset's real sepsis codes.
+    root = _mimic_root(tmp_path)
+    plan = ExtractionPlan(
+        nct_id="NCT-LIVE", cohort_filter_concepts=["Sepsis"],
+        concepts=[ConceptRequest(concept="Sepsis", event_type=EventType.DIAGNOSIS, role="eligibility"),
+                  ConceptRequest(concept="death", event_type=EventType.OUTCOME, role="outcome")],
+        window_hours=(-48.0, 24.0))
+    # curated vocab has no 'Sepsis' concept -> empty (reproduces the empty live run)
+    curated = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root), use_vocab_index=False)
+    assert curated(plan, None, "MIMIC-IV") is None
+    # index auto-wire -> 'Sepsis' resolves to the real code (99592) -> non-empty cohort
+    wired = live_loader.make_extract_fn(("MIMIC-IV",), mimic_root=str(root),
+                                        use_vocab_index=True, index_cache_dir=str(tmp_path / "vi"))
+    df = wired(plan, None, "MIMIC-IV")
+    assert df is not None and 1 in set(df["TRAJECTORY_ID"])
+    assert {"diagn", "outco"} <= set(df["EVENT_TYPE"])         # cohort + death, non-empty
 
 
 def run():
