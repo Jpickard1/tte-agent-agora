@@ -172,6 +172,54 @@ def test_arm_assignment_normalizes_drug_prefix_and_substring():
     assert by.get("thiamine") == [1] and by.get("control") == [2]
 
 
+# --- #162 treatment-strategy: per-protocol combo arms (the HAT banana-bag failure) ---
+# combo trial: 'treated' = the TRIPLE protocol (hydrocortisone + ascorbic acid + thiamine).
+#  10: gets ALL THREE in window -> the real protocol
+#  11: gets ONLY routine thiamine ('banana bag') -> NOT the protocol
+#  12: gets nothing
+_COMBO_SPEC = SPEC.model_copy(update={"arms": [
+    Arm(name="hat", intervention_concepts=["hydrocortisone", "ascorbic acid", "thiamine"]),
+    Arm(name="control", is_control=True)]})
+_COMBO_EVENTS = _frame([
+    (10, _hr(-1), "diagn", "sepsis", "1"), (10, _hr(0), "lab", "lactate", "4"),
+    (10, _hr(2), "medic", "hydrocortisone", "1"), (10, _hr(3), "medic", "ascorbic acid", "1"),
+    (10, _hr(4), "medic", "thiamine", "1"),
+    (11, _hr(-1), "diagn", "sepsis", "1"), (11, _hr(0), "lab", "lactate", "4"),
+    (11, _hr(2), "medic", "thiamine", "1"),               # routine banana-bag thiamine ONLY
+    (12, _hr(-1), "diagn", "sepsis", "1"), (12, _hr(0), "lab", "lactate", "4")])
+
+
+def test_combo_any_strategy_overmatches_routine_drug():
+    # DEFAULT 'any' = the bug probe found: a single routine component flips 11 to 'treated'
+    c = build_cohort(_COMBO_EVENTS, _COMBO_SPEC, dataset="TEST", arm_strategy="any")
+    by = {a.name: a.trajectory_ids for a in c.arms}
+    assert by.get("hat") == [10, 11]                       # 11 wrongly 'treated' on banana-bag thiamine
+    assert by.get("control") == [12]
+
+
+def test_combo_all_strategy_requires_full_protocol_and_preserves_control():
+    # 'all' = per-protocol: only 10 (all three in-window) is treated; 11 + 12 -> control
+    c = build_cohort(_COMBO_EVENTS, _COMBO_SPEC, dataset="TEST", arm_strategy="all")
+    by = {a.name: a.trajectory_ids for a in c.arms}
+    assert by.get("hat") == [10]                           # the real protocol
+    assert sorted(by.get("control", [])) == [11, 12]       # control arm SURVIVES (the fix)
+    # provenance for the protocol marks COMPLETION (last required component, thiamine @ +4h)
+    p = next(x for x in c.assignment_provenance if x["trajectory_id"] == 10)
+    assert p["arm"] == "hat" and p["t_rel_hours"] == 4.0
+
+
+def test_combo_strategy_from_spec_arm_field():
+    # the per-arm Arm.strategy='all' is honored without an explicit override (worker1/ctgov
+    # sets it from the protocol); a run-level override still wins when given.
+    spec = SPEC.model_copy(update={"arms": [
+        Arm(name="hat", intervention_concepts=["hydrocortisone", "ascorbic acid", "thiamine"],
+            strategy="all"),
+        Arm(name="control", is_control=True)]})
+    c = build_cohort(_COMBO_EVENTS, spec, dataset="TEST")   # no arm_strategy override
+    by = {a.name: a.trajectory_ids for a in c.arms}
+    assert by.get("hat") == [10] and sorted(by.get("control", [])) == [11, 12]
+
+
 def test_unmeasurable_eligibility_skipped_not_failing():
     # an age (DEMOGRAPHIC) criterion with NO demog events present -> skipped, not failing all
     spec = SPEC.model_copy(update={"eligibility": SPEC.eligibility + [
