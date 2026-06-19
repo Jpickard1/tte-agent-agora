@@ -156,3 +156,44 @@ def test_landmark_guard_can_be_disabled():
         (9, _hr(10), "outco", "death", "1")])
     c = build_cohort(early, SPEC, dataset="TEST", enforce_landmark=False)
     assert c.diagnostics.n_excluded_immortal == 0
+
+
+def test_arm_assignment_normalizes_drug_prefix_and_substring():
+    # trial intervention 'Drug: Thiamine'; MIMIC med 'Thiamine 100mg' -> should match
+    spec = SPEC.model_copy(update={"arms": [
+        Arm(name="thiamine", intervention_concepts=["Drug: Thiamine"]),
+        Arm(name="control", is_control=True)]})
+    ev = _frame([
+        (1, _hr(-1), "diagn", "sepsis", "1"), (1, _hr(0), "lab", "lactate", "4"),
+        (1, _hr(2), "medic", "Thiamine 100mg", "1"),
+        (2, _hr(-1), "diagn", "sepsis", "1"), (2, _hr(0), "lab", "lactate", "4")])
+    c = build_cohort(ev, spec, dataset="TEST")
+    by = {a.name: a.trajectory_ids for a in c.arms}
+    assert by.get("thiamine") == [1] and by.get("control") == [2]
+
+
+def test_unmeasurable_eligibility_skipped_not_failing():
+    # an age (DEMOGRAPHIC) criterion with NO demog events present -> skipped, not failing all
+    spec = SPEC.model_copy(update={"eligibility": SPEC.eligibility + [
+        EligibilityCriterion(concept="age", event_type=EventType.DEMOGRAPHIC,
+                             comparator=Comparator.GE, value=18.0)]})
+    c = build_cohort(EVENTS, spec, dataset="TEST")  # EVENTS has no DEMOGRAPHIC events
+    assert c.n_total == 2  # 1,2 still enrolled (age criterion skipped, not failed)
+    d = c.diagnostics
+    assert d.n_skipped_unmeasurable == 1
+    assert any("age" in s for s in d.skipped_eligibility)
+
+
+def test_measurable_criteria_still_applied():
+    # sanity: a measurable criterion (sepsis dx present) is still enforced
+    c = build_cohort(EVENTS, SPEC, dataset="TEST")
+    assert c.diagnostics.n_skipped_unmeasurable == 0  # sepsis + lactate both present
+    assert c.n_total == 2
+
+
+def test_skip_unmeasurable_can_be_disabled():
+    spec = SPEC.model_copy(update={"eligibility": SPEC.eligibility + [
+        EligibilityCriterion(concept="age", event_type=EventType.DEMOGRAPHIC,
+                             comparator=Comparator.GE, value=18.0)]})
+    c = build_cohort(EVENTS, spec, dataset="TEST", skip_unmeasurable=False)
+    assert c.n_total == 0  # age criterion now fails everyone (no demog events)
