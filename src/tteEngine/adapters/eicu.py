@@ -27,7 +27,10 @@ from tteEngine.contracts.extraction_plan import ExtractionPlan
 #: synthetic anchor for eICU offset->timestamp (times are relative-by-design).
 EPOCH = pd.Timestamp("2000-01-01 00:00", tz="UTC")
 
-#: eICU-CRD table/column map. `offset` is minutes from unit admission.
+#: eICU-CRD table/column map for the NAME/VALUE long tables (generic loop).
+#: `offset` is minutes from unit admission. MEASUREMENT (wide vitals tables) and
+#: OUTCOME (patient discharge status) are handled by dedicated helpers below, the
+#: way the MIMIC adapter special-cases deathtime — so they are NOT in TABLE_SPEC.
 TABLE_SPEC: dict[EventType, dict[str, str]] = {
     EventType.DIAGNOSIS: {"table": "diagnosis", "offset": "diagnosisoffset",
                           "name": "icd9code", "value": "diagnosisstring"},
@@ -36,6 +39,26 @@ TABLE_SPEC: dict[EventType, dict[str, str]] = {
     EventType.MEDICATION: {"table": "medication", "offset": "drugstartoffset",
                            "name": "drugname", "value": "dosage"},
 }
+
+#: eICU vitals are WIDE (one row, many vital columns) in vitalPeriodic/Aperiodic.
+#: This maps each source column -> a canonical vital concept name; the adapter
+#: MELTS the requested columns into 5-col MEASUREMENT events.
+VITAL_TABLES: tuple[str, ...] = ("vitalperiodic", "vitalaperiodic")
+VITAL_OFFSET = "observationoffset"
+VITAL_COLUMNS: dict[str, str] = {
+    "heartrate": "heart_rate", "respiration": "resp_rate", "sao2": "spo2",
+    "temperature": "temperature", "cvp": "cvp",
+    "systemicsystolic": "sbp", "systemicdiastolic": "dbp", "systemicmean": "map",
+    "noninvasivesystolic": "sbp", "noninvasivediastolic": "dbp", "noninvasivemean": "map",
+}
+
+#: eICU mortality lives in patient.{unit,hospital}dischargestatus == 'Expired'.
+#: Hospital-level is preferred (captures in-hospital deaths beyond ICU discharge).
+_MORTALITY_SOURCES: tuple[tuple[str, str], ...] = (
+    ("hospitaldischargestatus", "hospitaldischargeoffset"),
+    ("unitdischargestatus", "unitdischargeoffset"),
+)
+_MORTALITY_KEYWORDS = ("death", "mortal", "expire", "surviv", "died", "fatal")
 
 Resolver = Callable[[str], set[str]]
 _STAY = "patientunitstayid"
@@ -75,10 +98,95 @@ def _cohort_stays(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
     return set(hit[_STAY].astype("int64"))
 
 
+def _extract_vitals(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
+                    stays: set[int], lo_min: float, hi_min: float,
+                    resolve: Resolver) -> list[pd.DataFrame]:
+    """MELT the requested MEASUREMENT (vital) columns from vitalPeriodic/Aperiodic
+    into 5-col events. A request matches a source column when the column's canonical
+    vital name (VITAL_COLUMNS) is in the request's resolved concept set."""
+    wanted: set[str] = set()
+    for req in plan.concepts:
+        if req.event_type == EventType.MEASUREMENT:
+            wanted |= resolve(req.concept) | {req.concept}
+    if not wanted:
+        return []
+    parts: list[pd.DataFrame] = []
+    for tname in VITAL_TABLES:
+        src = tables.get(tname)
+        if src is None or src.empty or VITAL_OFFSET not in src.columns:
+            continue
+        in_cohort = src[src[_STAY].astype("int64").isin(stays)].copy()
+        if in_cohort.empty:
+            continue
+        off = pd.to_numeric(in_cohort[VITAL_OFFSET], errors="coerce")
+        in_win = in_cohort[(off >= lo_min) & (off <= hi_min)]
+        if in_win.empty:
+            continue
+        for col, vital in VITAL_COLUMNS.items():
+            if col not in in_win.columns or vital not in wanted:
+                continue
+            sub = in_win[[_STAY, VITAL_OFFSET, col]].copy()
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+            sub = sub.dropna(subset=[col])
+            if sub.empty:
+                continue
+            parts.append(pd.DataFrame({
+                "TRAJECTORY_ID": sub[_STAY].astype("int64"),
+                "TIMESTAMP": _ts(sub[VITAL_OFFSET]),
+                "EVENT_TYPE": EventType.MEASUREMENT.value,
+                "EVENT_NAME": vital,
+                "EVENT_VALUE": sub[col].astype(str),
+            }))
+    return parts
+
+
+def _extract_mortality(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame],
+                       stays: set[int]) -> list[pd.DataFrame]:
+    """Emit OUTCOME (death) events for stays whose patient discharge status is
+    'Expired'. Like MIMIC's deathtime: NOT window-clipped (post-baseline), one
+    event per mortality-like outcome concept, EVENT_NAME=the concept. Uses the
+    first discharge source (hospital preferred) that has data."""
+    death_reqs = [r for r in plan.concepts
+                  if r.event_type == EventType.OUTCOME
+                  and any(k in (r.concept or "").lower() for k in _MORTALITY_KEYWORDS)]
+    if not death_reqs:
+        return []
+    pt = tables.get("patient")
+    if pt is None or pt.empty:
+        return []
+    pt = pt[pt[_STAY].astype("int64").isin(stays)]
+    if pt.empty:
+        return []
+    for status_col, offset_col in _MORTALITY_SOURCES:
+        if status_col not in pt.columns:
+            continue
+        dead = pt[pt[status_col].astype(str).str.strip().str.lower() == "expired"].copy()
+        if dead.empty:
+            continue
+        off = (pd.to_numeric(dead[offset_col], errors="coerce")
+               if offset_col in dead.columns else pd.Series(0, index=dead.index))
+        dead = dead.assign(_off=off).dropna(subset=["_off"])
+        if dead.empty:
+            continue
+        parts: list[pd.DataFrame] = []
+        for req in death_reqs:
+            parts.append(pd.DataFrame({
+                "TRAJECTORY_ID": dead[_STAY].astype("int64"),
+                "TIMESTAMP": _ts(dead["_off"]),
+                "EVENT_TYPE": EventType.OUTCOME.value,
+                "EVENT_NAME": req.concept,
+                "EVENT_VALUE": "1",
+            }))
+        return parts  # first source with data wins
+    return []
+
+
 def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
             resolve: Resolver | None = None) -> pd.DataFrame:
-    """Build the canonical 5-col stream for `plan` from eICU `tables`
-    (patient, diagnosis, lab, medication, ...). Returns a validate_canonical df."""
+    """Build the canonical 5-col stream for `plan` from eICU `tables` (patient,
+    diagnosis, lab, medication, vitalperiodic/vitalaperiodic). Covers DIAGNOSIS/
+    LAB/MEDICATION (generic loop), MEASUREMENT (melted vitals) and OUTCOME
+    (mortality from patient discharge status). Returns a validate_canonical df."""
     resolve = resolve or _identity_resolver
     stays = _cohort_stays(plan, tables, resolve)
     if not stays:
@@ -111,6 +219,10 @@ def extract(plan: ExtractionPlan, tables: Mapping[str, pd.DataFrame], *,
             "EVENT_VALUE": rows[spec["value"]].astype(str),
         })
         parts.append(out)
+
+    # MEASUREMENT (wide vitals) + OUTCOME (mortality) via dedicated extractors
+    parts.extend(_extract_vitals(plan, tables, stays, lo_min, hi_min, resolve))
+    parts.extend(_extract_mortality(plan, tables, stays))
 
     if not parts:
         return _empty_canonical()

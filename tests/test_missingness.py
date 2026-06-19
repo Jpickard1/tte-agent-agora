@@ -25,11 +25,13 @@ def _spec():
 
 
 def test_proxy_list_from_measurability():
-    # eICU: vitals (map) + mortality (death) are proxies; MIMIC: none
-    eicu = mz.proxy_substitution_list(_spec(), "eICU-CRD")
-    concepts = {p["concept"] for p in eicu}
+    # MGB (gated) proxies vitals (map) + mortality (death); MIMIC + eICU now
+    # extract both directly (#83) -> no proxies.
+    mgb = mz.proxy_substitution_list(_spec(), "MGB")
+    concepts = {p["concept"] for p in mgb}
     assert {"map", "death"} <= concepts
     assert mz.proxy_substitution_list(_spec(), "MIMIC-IV") == []
+    assert mz.proxy_substitution_list(_spec(), "eICU-CRD") == []
 
 
 def test_proxy_sensitivity_robust_when_same_side():
@@ -47,7 +49,7 @@ def test_proxy_sensitivity_flags_conclusion_flip():
 
 def test_combined_report_has_three_parts():
     rep = mz.missingness_and_proxy_report(
-        _spec(), "eICU-CRD", sensitivity=mz.proxy_sensitivity(0.62, 0.65))
+        _spec(), "MGB", sensitivity=mz.proxy_sensitivity(0.62, 0.65))   # MGB still proxies
     assert rep["n_proxies"] >= 2 and rep["proxy_list"]
     assert rep["proxy_sensitivity"]["robust_to_proxy"] is True
     assert "missingness" not in rep                   # no frame supplied -> omitted

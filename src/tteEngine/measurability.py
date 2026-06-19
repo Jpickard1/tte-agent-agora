@@ -37,7 +37,10 @@ MEASURABLE, PROXY, UNMEASURABLE = "measurable", "proxy", "unmeasurable"
 DATASET_DIRECT: dict[str, set[EventType]] = {
     "MIMIC-IV": {EventType.DIAGNOSIS, EventType.LAB, EventType.MEASUREMENT,
                  EventType.MEDICATION, EventType.OUTCOME},
-    "eICU-CRD": {EventType.DIAGNOSIS, EventType.LAB, EventType.MEDICATION},
+    # eICU now emits vitals (MEASUREMENT) + mortality (OUTCOME) too — #83 wired
+    # vitalPeriodic/Aperiodic + patient discharge status, so they're DIRECT.
+    "eICU-CRD": {EventType.DIAGNOSIS, EventType.LAB, EventType.MEDICATION,
+                 EventType.MEASUREMENT, EventType.OUTCOME},
     "MGB": {EventType.DIAGNOSIS, EventType.LAB, EventType.MEDICATION},  # gated, conservative
 }
 
@@ -45,10 +48,9 @@ DATASET_DIRECT: dict[str, set[EventType]] = {
 #: surrogate is available / it needs wiring (so: proxy, not flatly unmeasurable).
 DATASET_PROXY: dict[str, set[EventType]] = {
     "MIMIC-IV": {EventType.DEMOGRAPHIC, EventType.PROCEDURE, EventType.LOCATION},
-    # eICU has vitalPeriodic (MEASUREMENT) + unitdischargestatus (mortality OUTCOME),
-    # neither wired into the adapter yet.
-    "eICU-CRD": {EventType.MEASUREMENT, EventType.OUTCOME, EventType.DEMOGRAPHIC,
-                 EventType.PROCEDURE, EventType.LOCATION},
+    "eICU-CRD": {EventType.DEMOGRAPHIC, EventType.PROCEDURE, EventType.LOCATION},
+    # MGB (gated): vitals/mortality exist in the source but the adapter is a
+    # passthrough filter, not yet wired for them.
     "MGB": {EventType.MEASUREMENT, EventType.OUTCOME, EventType.DEMOGRAPHIC,
             EventType.PROCEDURE},
 }
