@@ -205,3 +205,19 @@ def test_run_corpus_to_jsonl_imports_no_analysis(tmp_path):
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"})
     assert "import-light OK" in r.stdout, r.stderr
+
+
+def test_run_corpus_surfaces_assignment_audit_via_on_audit():
+    # #138/#130: on_audit fires an AssignmentAudit per emulated (trial,dataset),
+    # assembled from the CohortResult primitives -> live_run persists it.
+    from tteEngine.contracts.audit import AssignmentAudit
+    from tteEngine.orchestration.corpus import assignment_audit_from_cohort  # noqa: F401
+    audits = []
+    rows = list(run_corpus(_jobs(2), ["MIMIC-IV"], extract_fn=_extract_ok,
+                           engine_fn=_crude_engine, compare_fn=_stub_compare,
+                           on_audit=audits.append))
+    assert len(rows) == 2 and len(audits) == 2
+    a = audits[0]
+    assert isinstance(a, AssignmentAudit)
+    assert a.n_screened >= a.n_enrolled and a.arms  # CONSORT counts + arms populated
+    assert any(e.concept == "sepsis" for e in a.eligibility)  # eligibility decisions surfaced

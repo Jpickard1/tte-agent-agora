@@ -57,6 +57,27 @@ def _arms_ok(cohort) -> bool:
     return treated > 0 and control > 0
 
 
+def assignment_audit_from_cohort(cohort):
+    """Assemble a contracts.audit.AssignmentAudit from a CohortResult's #138 audit
+    primitives — the 'how patients were sorted' record live_run persists (audit.jsonl)
+    and the #130 UI renders. Pure mapping; no recomputation of include/drop."""
+    from tteEngine.contracts.audit import (ArmAudit, AssignmentAudit, EligibilityDecision,
+                                           MatchProvenance)
+    d = cohort.diagnostics
+    arms = [ArmAudit(name=a.name, is_control=a.is_control, n=len(a.trajectory_ids),
+                     match_method_counts=cohort.arm_method_counts.get(a.name, {}))
+            for a in cohort.arms]
+    return AssignmentAudit(
+        nct_id=cohort.nct_id, dataset=cohort.dataset,
+        n_screened=getattr(d, "n_screened", 0), n_eligible=getattr(d, "n_eligible", 0),
+        n_enrolled=cohort.n_total, n_excluded_immortal=getattr(d, "n_excluded_immortal", 0),
+        n_unassigned=cohort.n_unassigned, arms=arms,
+        eligibility=[EligibilityDecision(**e) for e in cohort.eligibility_decisions],
+        sample=[MatchProvenance(**p) for p in cohort.assignment_provenance],
+        n_low_confidence=cohort.n_low_confidence,
+    )
+
+
 def run_corpus(
     jobs: Iterable[tuple[dict, "TargetTrialSpec"]],
     datasets: list[str],
@@ -67,6 +88,9 @@ def run_corpus(
     plan_fn: Callable | None = None,
     drops: DropLog | None = None,
     resolve=None,
+    arm_match_fn=None,
+    measurable_fn=None,
+    on_audit: Callable | None = None,
 ) -> Iterator[ComparisonResult]:
     """Stream one ComparisonResult per (trial x dataset) that emulates cleanly.
 
@@ -95,13 +119,16 @@ def run_corpus(
                 if events is None or len(events) == 0:
                     drops.add(nct, ds, "no extractable events")
                     continue
-                cohort = build_cohort(events, spec, dataset=ds, resolve=resolve)
+                cohort = build_cohort(events, spec, dataset=ds, resolve=resolve,
+                                      arm_match_fn=arm_match_fn, measurable_fn=measurable_fn)
                 if cohort.n_total == 0:
                     drops.add(nct, ds, "empty cohort after eligibility")
                     continue
                 if not _arms_ok(cohort):
                     drops.add(nct, ds, "missing treated or control arm")
                     continue
+                if on_audit is not None:  # #138/#130: surface the AssignmentAudit for live_run to persist
+                    on_audit(assignment_audit_from_cohort(cohort))
                 emulated = engine_fn(events, cohort, spec)
                 yield compare_fn(study, emulated, dataset=ds)
             except Exception as exc:  # one trial must never kill the batch
