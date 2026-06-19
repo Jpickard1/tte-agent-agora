@@ -221,3 +221,25 @@ def test_run_corpus_surfaces_assignment_audit_via_on_audit():
     assert isinstance(a, AssignmentAudit)
     assert a.n_screened >= a.n_enrolled and a.arms  # CONSORT counts + arms populated
     assert any(e.concept == "sepsis" for e in a.eligibility)  # eligibility decisions surfaced
+
+
+def test_run_corpus_binds_dataset_into_resolvers():
+    # run_corpus iterates datasets, so it BINDS ds into the (dataset-aware) resolvers
+    # before build_cohort -> a single measurable_fn/arm_match_fn is correct across
+    # datasets (not silently wrong when bound to one). Guards probe's multi-dataset run.
+    seen_measurable, seen_match = [], []
+
+    def measurable_fn(crit, dataset):       # 2-arg: (criterion, dataset)
+        seen_measurable.append(dataset)
+        return True
+
+    def arm_match_fn(name, concepts, dataset):  # 3-arg: (name, concepts, dataset)
+        seen_match.append(dataset)
+        return (name in concepts, None, "name")
+
+    list(run_corpus(_jobs(1), ["MIMIC-IV", "eICU"], extract_fn=_extract_ok,
+                    engine_fn=_crude_engine, compare_fn=_stub_compare,
+                    measurable_fn=measurable_fn, arm_match_fn=arm_match_fn))
+    # each dataset's cohort saw ITS OWN dataset label in the resolvers
+    assert set(seen_measurable) == {"MIMIC-IV", "eICU"}
+    assert set(seen_match) <= {"MIMIC-IV", "eICU"} and seen_match  # match fn also dataset-bound
