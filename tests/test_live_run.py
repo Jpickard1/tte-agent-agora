@@ -103,3 +103,23 @@ def test_build_emulable_jobs_reports_catalog_no_network(monkeypatch):
     assert catalog["n_fetched"] == 4 and catalog["max_studies"] == 10
     assert catalog["n_emulable"] == len(jobs) == len(specs)
     assert catalog["n_emulable"] + catalog["n_unemulable"] + catalog["n_unparseable"] == 4
+
+
+def test_run_live_emits_audit_sidecar(tmp_path):
+    """#143: audit.jsonl persisted, joined on (nct_id,dataset) like corpus/context/ledger."""
+    from tteEngine.contracts.audit import load_audit_jsonl
+    jobs = _jobs(3)
+    specs = [s for _, s in jobs]
+    summary = run_live(extract_fn=_extract_ok, engine_fn=_crude_engine,
+                       compare_fn=_stub_compare, jobs=jobs, specs=specs, out_dir=tmp_path,
+                       datasets=("MIMIC-IV",), figures=False)
+    assert (tmp_path / "audit.jsonl").exists()
+    audits = list(load_audit_jsonl(tmp_path / "audit.jsonl"))
+    assert summary["n_audit"] == len(audits) == 3
+    # every audit joins to a corpus row on (nct_id, dataset)
+    from tteEngine.contracts.io import load_comparisons_jsonl
+    corp = list(load_comparisons_jsonl(tmp_path / "corpus.jsonl"))
+    assert {(a.nct_id, a.dataset) for a in audits} == {(c.nct_id, c.dataset) for c in corp}
+    # each carries the CONSORT counts + arm summary
+    a = audits[0]
+    assert a.n_screened >= a.n_enrolled and a.arms
